@@ -51,4 +51,4 @@ Compatibility: Zotero 7–9. When a new Zotero major lands, bump `strict_max_ver
 
 ## License
 
-[MIT](LICENSE) © Heidi Andersén / Vahtian
+[Apache 2.0](LICENSE) © Heidi Andersén / Vahtian

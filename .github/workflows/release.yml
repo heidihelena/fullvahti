@@ -27,7 +27,7 @@ jobs:
           mkdir -p dist
           zip dist/fullvahti-${GITHUB_REF_NAME#v}.xpi \
             manifest.json bootstrap.js fullvahti.js \
-            preferences.xhtml preferences.js prefs.js icon.svg LICENSE
+            preferences.xhtml preferences.js prefs.js icon.svg LICENSE NOTICE
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
