@@ -12,7 +12,7 @@ FullVahti is a [Zotero](https://www.zotero.org) plugin from the [Vahtian](https:
 
 After each run you also get **one** report note in your library (tagged `fullvahti:report`) listing everything *not* found and why — exactly the list you need for interlibrary loan requests or a PRISMA flow diagram. FullVahti never creates per-item notes: the attached PDF is its own record.
 
-**Open access only.** FullVahti never bypasses a paywall. Paywalled papers are honestly reported as missing.
+**Open access only.** FullVahti never bypasses a paywall. Paywalled papers are honestly reported as missing. PubMed Central downloads are restricted to the [PMC Open Access Subset](https://pmc.ncbi.nlm.nih.gov/tools/openftlist/) via its official OA service — articles that are merely *readable* in PMC are reported for your library to request, not scraped. The report records the license of every PDF it attaches.
 
 ## Install (no technical skills needed)
 
@@ -40,7 +40,7 @@ No silent writes: the door is closed unless you open it, and only tag changes ar
 
 ## Privacy
 
-- Lookups go directly from your computer to Unpaywall and NCBI/Europe PMC, carrying the paper's DOI/PMID and your contact email. Nothing else, to no one else.
+- Lookups go directly from your computer to Unpaywall and NCBI/Europe PMC, carrying the paper's DOI/PMID; your contact email goes only to the APIs that ask for it (Unpaywall, NCBI), never to the sites PDFs are downloaded from. Nothing else, to no one else.
 - No analytics, no accounts, no Vahtian servers involved.
 
 ## Development

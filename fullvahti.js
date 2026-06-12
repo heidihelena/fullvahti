@@ -16,7 +16,13 @@
  * audited writeback can add/remove tags. Default OFF. No silent writes.
  *
  * Stance (shared with the Vahtian spine): open access only — paywalled items are
- * reported as missing, never bypassed. Polite pacing. Everything stays local.
+ * reported as missing, never bypassed. PMC downloads are restricted to the PMC
+ * Open Access Subset via the OA Web Service; PMC pages are never scraped.
+ *
+ * Where data goes (and nowhere else): Zotero metadata is read locally. Each
+ * item's DOI/PMID — plus the contact email where an API asks for it — is sent
+ * to the OA-resolution services (Unpaywall, NCBI, Europe PMC). Resolved PDF
+ * URLs are fetched from their host sites, without the email.
  */
 
 var FullVahti = {
@@ -36,7 +42,11 @@ var FullVahti = {
 	// A real OA article PDF is essentially always larger than this; smaller "PDFs"
 	// are almost always publisher error/landing stubs, so we reject them (-> check).
 	MIN_PDF_BYTES: 10000,
+	MAX_PDF_BYTES: 100000000,
 	HTTP_TIMEOUT: 30000,
+	// Pause before EVERY outgoing request (not just per item) — NCBI asks for
+	// <= 3 requests/second without an API key; we stay well under everywhere.
+	REQUEST_DELAY: 350,
 
 	init({ id, version, rootURI }) {
 		if (this.initialized) return;
@@ -190,25 +200,29 @@ var FullVahti = {
 
 				let doi = this.extractDOI(item);
 				let pmid = this.extractPMID(item);
-				let dedup = doi || pmid || item.key;
+				let pmcid = this.extractPMCID(item);
+				let dedup = doi || pmid || pmcid || item.key;
 				if (seen.has(dedup)) continue; // collapse duplicate items
 				seen.add(dedup);
 
-				let row = { key: item.key, title, doi: doi || "", pmid: pmid || "", status: "", reason: "", source: "" };
+				let row = { key: item.key, title, doi: doi || "", pmid: pmid || "",
+					status: "", reason: "", source: "", license: "", oaStatus: "" };
 				try {
 					if (this.hasPDF(item)) {
 						row.status = "found";
 						row.reason = "already had a PDF attachment";
 					}
-					else if (!doi && !pmid) {
+					else if (!doi && !pmid && !pmcid) {
 						row.status = "check";
-						row.reason = "no DOI or PMID on the item";
+						row.reason = "no DOI, PMID, or PMCID on the item";
 					}
 					else {
-						let res = await this.resolveOA(doi, pmid, email);
+						let res = await this.resolveOA(doi, pmid, pmcid, email);
 						row.status = res.status;
 						row.reason = res.reason || "";
 						row.source = res.source || "";
+						row.license = res.license || "";
+						row.oaStatus = res.oaStatus || "";
 						if (res.status === "found") {
 							await this.attachPDF(item, res.bytes, res.source);
 						}
@@ -268,8 +282,15 @@ var FullVahti = {
 		doi = (doi || "").trim()
 			.replace(/^doi:\s*/i, "")
 			.replace(/^https?:\/\/(dx\.)?doi\.org\//i, "");
-		doi = doi.split(/\s/)[0] || "";
-		doi = doi.replace(/[.,;:)>\]}"']+$/, "");
+		doi = doi.split(/[\s<>"']/)[0] || "";
+		doi = doi.replace(/[.,;:>}"']+$/, "");
+		// DOI suffixes may legitimately contain ()/[] — only trim unbalanced closers.
+		while (doi.endsWith(")") && (doi.split("(").length < doi.split(")").length)) {
+			doi = doi.slice(0, -1).replace(/[.,;:]+$/, "");
+		}
+		while (doi.endsWith("]") && (doi.split("[").length < doi.split("]").length)) {
+			doi = doi.slice(0, -1).replace(/[.,;:]+$/, "");
+		}
 		return doi || null;
 	},
 
@@ -292,8 +313,15 @@ var FullVahti = {
 		}
 		let extra = "";
 		try { extra = item.getField("extra") || ""; } catch (e) { /* ignore */ }
-		let m = extra.match(/\bPMID:?\s*(\d+)/);
+		let m = extra.match(/\b(?:PMID|PubMed ID)\s*[:=]?\s*(\d+)/i);
 		return m ? m[1] : null;
+	},
+
+	extractPMCID(item) {
+		let extra = "";
+		try { extra = item.getField("extra") || ""; } catch (e) { /* ignore */ }
+		let m = extra.match(/\bPMCID\s*[:=]?\s*(PMC\d+)/i);
+		return m ? m[1].toUpperCase() : null;
 	},
 
 	hasPDF(item) {
@@ -307,16 +335,34 @@ var FullVahti = {
 	// -----------------------------------------------------------------
 	// Open-access resolution (OA only — never bypasses a paywall)
 	// -----------------------------------------------------------------
+	async politePause() {
+		await Zotero.Promise.delay(this.REQUEST_DELAY);
+	},
+
 	async fetchJSON(url) {
-		let xhr = await Zotero.HTTP.request("GET", url, {
+		await this.politePause();
+		return Zotero.HTTP.request("GET", url, {
 			responseType: "json",
 			timeout: this.HTTP_TIMEOUT,
 			successCodes: false, // resolve on any status; we inspect it ourselves
 		});
-		return xhr;
+	},
+
+	async fetchText(url) {
+		await this.politePause();
+		return Zotero.HTTP.request("GET", url, {
+			responseType: "text",
+			timeout: this.HTTP_TIMEOUT,
+			successCodes: false,
+		});
 	},
 
 	async downloadPDF(url) {
+		if (!/^https?:\/\//i.test(url)) {
+			this.log("blocked non-http(s) PDF URL: " + url);
+			return null;
+		}
+		await this.politePause();
 		let xhr;
 		try {
 			xhr = await Zotero.HTTP.request("GET", url, {
@@ -329,9 +375,20 @@ var FullVahti = {
 			return null;
 		}
 		let bytes = new Uint8Array(xhr.response);
-		// %PDF-
-		let isPDF = bytes.length >= 5 && bytes[0] === 0x25 && bytes[1] === 0x50
-			&& bytes[2] === 0x44 && bytes[3] === 0x46 && bytes[4] === 0x2D;
+		if (bytes.length > this.MAX_PDF_BYTES) {
+			this.log("PDF too large (" + bytes.length + " bytes): " + url);
+			return null;
+		}
+		// %PDF- somewhere in the first 1024 bytes (the spec tolerates leading junk)
+		let isPDF = false;
+		let limit = Math.min(bytes.length - 4, 1024);
+		for (let i = 0; i < limit; i++) {
+			if (bytes[i] === 0x25 && bytes[i + 1] === 0x50 && bytes[i + 2] === 0x44
+				&& bytes[i + 3] === 0x46 && bytes[i + 4] === 0x2D) {
+				isPDF = true;
+				break;
+			}
+		}
 		if (!isPDF) {
 			this.log("not a PDF: " + url);
 			return null;
@@ -344,12 +401,57 @@ var FullVahti = {
 	},
 
 	/**
-	 * Try DOI (Unpaywall) then PMID (PMC / Europe PMC).
-	 * Returns { status: found|missing|check, bytes?, source?, reason? }.
+	 * Query the PMC OA Web Service — the approved interface to the PMC Open
+	 * Access Subset. Being in PMC is NOT a download permission; only OA-subset
+	 * records may be fetched automatically, and this service is how you ask.
+	 * Returns { isOA, pdfURL?, license?, error? }.
 	 */
-	async resolveOA(doi, pmid, email) {
+	async pmcOALookup(pmcid) {
+		try {
+			let xhr = await this.fetchText(
+				"https://www.ncbi.nlm.nih.gov/pmc/utils/oa/oa.fcgi?id=" + encodeURIComponent(pmcid)
+			);
+			if (xhr.status !== 200) return { isOA: false, error: "HTTP " + xhr.status };
+			let xml = xhr.responseText || "";
+			let err = xml.match(/<error[^>]*\bcode="([^"]+)"/);
+			if (err) {
+				if (/idIsNotOpenAccess|idDoesNotExist/i.test(err[1])) return { isOA: false };
+				return { isOA: false, error: err[1] };
+			}
+			let license = (xml.match(/<record[^>]*\blicense="([^"]*)"/) || [])[1] || "";
+			let pdfURL = null;
+			let linkRe = /<link\b[^>]*>/g;
+			let m;
+			while ((m = linkRe.exec(xml))) {
+				if (/\bformat="pdf"/.test(m[0])) {
+					let href = (m[0].match(/\bhref="([^"]+)"/) || [])[1];
+					if (href) {
+						// The OA service often hands out FTP links; NCBI serves the
+						// same tree over HTTPS.
+						pdfURL = href.replace(/^ftp:\/\/ftp\.ncbi\.nlm\.nih\.gov\//i,
+							"https://ftp.ncbi.nlm.nih.gov/");
+						break;
+					}
+				}
+			}
+			return { isOA: true, pdfURL, license };
+		}
+		catch (e) {
+			this.log("pmc-oa error: " + e);
+			return { isOA: false, error: String(e) };
+		}
+	},
+
+	/**
+	 * Try DOI (Unpaywall, every OA location) then PMCID/PMID (PMC OA Subset,
+	 * Europe PMC for OA-confirmed records).
+	 * Returns { status: found|missing|check, bytes?, source?, license?, oaStatus?, reason? }.
+	 */
+	async resolveOA(doi, pmid, pmcid, email) {
 		let sawError = false;
 		let reason = "";
+		let oaStatus = "";
+		let join = (a, b) => (a ? a + "; " + b : b);
 
 		if (doi) {
 			try {
@@ -358,16 +460,36 @@ var FullVahti = {
 					+ "?email=" + encodeURIComponent(email)
 				);
 				if (xhr.status === 200 && xhr.response) {
-					if (!xhr.response.is_oa) {
+					let data = xhr.response;
+					oaStatus = data.oa_status || "";
+					if (!data.is_oa) {
 						reason = "Unpaywall: no open-access copy known";
 					}
 					else {
-						let pdfURL = (xhr.response.best_oa_location || {}).url_for_pdf;
-						if (pdfURL) {
-							let bytes = await this.downloadPDF(pdfURL);
-							if (bytes) return { status: "found", bytes, source: pdfURL };
+						// Try every OA location with a direct PDF link, best first —
+						// best_oa_location alone under-finds.
+						let locs = [];
+						if (data.best_oa_location) locs.push(data.best_oa_location);
+						for (let l of (data.oa_locations || [])) locs.push(l);
+						let candidates = [];
+						let seenURL = new Set();
+						for (let loc of locs) {
+							let u = loc && loc.url_for_pdf;
+							if (u && !seenURL.has(u)) {
+								seenURL.add(u);
+								candidates.push({ url: u, license: loc.license || "" });
+							}
+						}
+						for (let c of candidates) {
+							let bytes = await this.downloadPDF(c.url);
+							if (bytes) {
+								return { status: "found", bytes, source: c.url,
+									license: c.license, oaStatus };
+							}
+						}
+						if (candidates.length) {
 							sawError = true;
-							reason = "Unpaywall had a PDF link but the download failed";
+							reason = `Unpaywall listed ${candidates.length} PDF link(s) but none downloaded`;
 						}
 						else {
 							reason = "Unpaywall: OA copy exists but no direct PDF link";
@@ -389,8 +511,7 @@ var FullVahti = {
 			}
 		}
 
-		if (pmid) {
-			let pmcid = null;
+		if (pmid && !pmcid) {
 			try {
 				let xhr = await this.fetchJSON(
 					"https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/?ids=" + encodeURIComponent(pmid)
@@ -405,27 +526,43 @@ var FullVahti = {
 			catch (e) {
 				this.log("idconv error: " + e);
 			}
-			if (pmcid) {
-				// Routes vary in coverage per article, so we fall through. All OA-only.
-				let urls = [
-					`https://pmc.ncbi.nlm.nih.gov/articles/${pmcid}/pdf/`,
-					`https://www.ncbi.nlm.nih.gov/pmc/articles/${pmcid}/pdf/`,
-					`https://www.ebi.ac.uk/europepmc/webservices/rest/${pmcid}/fullTextPDF`,
-					`https://europepmc.org/articles/${pmcid}?pdf=render`,
-				];
-				for (let url of urls) {
-					let bytes = await this.downloadPDF(url);
-					if (bytes) return { status: "found", bytes, source: url };
-				}
-				sawError = true;
-				reason = (reason ? reason + "; " : "") + `in PMC (${pmcid}) but the PDF routes failed`;
-			}
-			else if (!reason) {
-				reason = "PMID has no PubMed Central record";
-			}
 		}
 
-		return { status: sawError ? "check" : "missing", reason };
+		if (pmcid) {
+			let oa = await this.pmcOALookup(pmcid);
+			if (oa.error) {
+				sawError = true;
+				reason = join(reason, "PMC OA service problem (" + oa.error + ")");
+			}
+			else if (!oa.isOA) {
+				reason = join(reason,
+					`in PMC (${pmcid}) but not in the open-access subset — request via your library`);
+			}
+			else {
+				if (oa.pdfURL) {
+					let bytes = await this.downloadPDF(oa.pdfURL);
+					if (bytes) {
+						return { status: "found", bytes, source: oa.pdfURL,
+							license: oa.license || "", oaStatus };
+					}
+				}
+				// OA-subset membership is confirmed, so Europe PMC's PDF for the
+				// same record is fair game as a fallback route.
+				let epmc = `https://www.ebi.ac.uk/europepmc/webservices/rest/${pmcid}/fullTextPDF`;
+				let bytes = await this.downloadPDF(epmc);
+				if (bytes) {
+					return { status: "found", bytes, source: epmc,
+						license: oa.license || "", oaStatus };
+				}
+				sawError = true;
+				reason = join(reason, `in the PMC OA subset (${pmcid}) but PDF download failed`);
+			}
+		}
+		else if (pmid && !reason) {
+			reason = "PMID has no PubMed Central record";
+		}
+
+		return { status: sawError ? "check" : "missing", reason, oaStatus };
 	},
 
 	async attachPDF(item, bytes, sourceURL) {
@@ -488,7 +625,9 @@ var FullVahti = {
 		}
 		let found = rows.filter(r => r.status === "found");
 		if (found.length) {
-			html += `<p>Attached: ${found.map(r => esc(r.title)).join(" · ")}</p>`;
+			let line = r => esc(r.title)
+				+ (r.license || r.oaStatus ? ` <em>(${esc(r.license || r.oaStatus)})</em>` : "");
+			html += `<p>Attached: ${found.map(line).join(" · ")}</p>`;
 		}
 
 		let note = new Zotero.Item("note");
