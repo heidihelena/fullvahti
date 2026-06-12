@@ -1,0 +1,20 @@
+{
+	"manifest_version": 2,
+	"name": "FullVahti",
+	"version": "0.1.0",
+	"description": "Find open-access full-text PDFs for your Zotero items — politely, legally, with status tags and a run report. Part of the Vahtian tool family.",
+	"homepage_url": "https://vahtian.com",
+	"author": "Heidi Andersén",
+	"icons": {
+		"48": "icon.svg",
+		"96": "icon.svg"
+	},
+	"applications": {
+		"zotero": {
+			"id": "fullvahti@vahtian.com",
+			"update_url": "https://raw.githubusercontent.com/heidihelena/fullvahti/main/updates.json",
+			"strict_min_version": "7.0",
+			"strict_max_version": "9.*"
+		}
+	}
+}

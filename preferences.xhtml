@@ -1,0 +1,49 @@
+<vbox xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+      xmlns:html="http://www.w3.org/1999/xhtml"
+      onload="FullVahtiPrefs.onPaneLoad()">
+
+	<groupbox>
+		<label><html:h2>Finding open-access PDFs</html:h2></label>
+		<html:div style="margin-bottom: 8px">
+			FullVahti looks up free, legal copies via Unpaywall and PubMed Central.
+			Those services ask for a contact email (sent only to them).
+		</html:div>
+		<hbox align="center">
+			<label value="Contact email:" control="fullvahti-email"/>
+			<html:input id="fullvahti-email" type="text" style="width: 22em"
+				preference="extensions.fullvahti.email"/>
+		</hbox>
+		<hbox align="center">
+			<label value="Trigger tag for the Tools-menu run:" control="fullvahti-trigger"/>
+			<html:input id="fullvahti-trigger" type="text" style="width: 14em"
+				preference="extensions.fullvahti.triggerTag"/>
+		</hbox>
+		<checkbox id="fullvahti-reportnote"
+			label="After each run, save one report note listing what was not found and why (good for interlibrary loan / PRISMA)"
+			preference="extensions.fullvahti.reportNote" native="true"/>
+	</groupbox>
+
+	<groupbox>
+		<label><html:h2>CiteVahti writeback (advanced — leave off unless you use CiteVahti)</html:h2></label>
+		<html:div style="margin-bottom: 8px">
+			Lets CiteVahti on this computer write status tags into your library through
+			a token-guarded local door. Nothing leaves your machine.
+		</html:div>
+		<checkbox id="fullvahti-writeback"
+			label="Allow CiteVahti to write tags (local only, token required)"
+			preference="extensions.fullvahti.writebackEnabled" native="true"/>
+		<hbox align="center">
+			<label value="Token:" control="fullvahti-token-display"/>
+			<html:input id="fullvahti-token-display" type="text" readonly="readonly" style="width: 26em"/>
+			<button id="fullvahti-token-generate" label="Generate new token"
+				oncommand="FullVahtiPrefs.generateToken()"/>
+		</hbox>
+	</groupbox>
+
+	<groupbox>
+		<html:div style="color: gray">
+			FullVahti fetches open-access copies only — it never bypasses a paywall.
+			Part of the Vahtian tool family (vahtian.com).
+		</html:div>
+	</groupbox>
+</vbox>
