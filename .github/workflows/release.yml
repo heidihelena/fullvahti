@@ -3,6 +3,7 @@ name: release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -13,24 +14,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check version matches tag
+      - name: Resolve version and tag
         run: |
-          MANIFEST_VERSION=$(python3 -c "import json; print(json.load(open('manifest.json'))['version'])")
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          if [ "$MANIFEST_VERSION" != "$TAG_VERSION" ]; then
-            echo "manifest.json version ($MANIFEST_VERSION) != tag ($TAG_VERSION)" >&2
+          VERSION=$(python3 -c "import json; print(json.load(open('manifest.json'))['version'])")
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=v$VERSION" >> "$GITHUB_ENV"
+          # On a tag push, the pushed tag must match manifest.json.
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+            echo "manifest.json version ($VERSION) != tag ($GITHUB_REF_NAME)" >&2
             exit 1
           fi
 
       - name: Build XPI
         run: |
           mkdir -p dist
-          zip dist/fullvahti-${GITHUB_REF_NAME#v}.xpi \
+          zip dist/fullvahti-${VERSION}.xpi \
             manifest.json bootstrap.js fullvahti.js \
             preferences.xhtml preferences.js prefs.js icon.svg LICENSE NOTICE
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.TAG }}
           files: dist/*.xpi
           generate_release_notes: true
