@@ -282,14 +282,18 @@ var FullVahti = {
 		doi = (doi || "").trim()
 			.replace(/^doi:\s*/i, "")
 			.replace(/^https?:\/\/(dx\.)?doi\.org\//i, "");
+		// A DOI always begins with "10." — drop any leading wrapper/junk, e.g. a
+		// paren or bracket the DOI was pasted inside ("(10.1000/foo)").
+		let at = doi.indexOf("10.");
+		if (at > 0) doi = doi.slice(at);
 		doi = doi.split(/[\s<>"']/)[0] || "";
 		doi = doi.replace(/[.,;:>}"']+$/, "");
 		// DOI suffixes may legitimately contain ()/[] — only trim unbalanced closers.
-		while (doi.endsWith(")") && (doi.split("(").length < doi.split(")").length)) {
-			doi = doi.slice(0, -1).replace(/[.,;:]+$/, "");
-		}
-		while (doi.endsWith("]") && (doi.split("[").length < doi.split("]").length)) {
-			doi = doi.slice(0, -1).replace(/[.,;:]+$/, "");
+		for (let [open, close] of [["(", ")"], ["[", "]"]]) {
+			while (doi.endsWith(close)
+				&& doi.split(open).length < doi.split(close).length) {
+				doi = doi.slice(0, -1).replace(/[.,;:]+$/, "");
+			}
 		}
 		return doi || null;
 	},
@@ -339,23 +343,18 @@ var FullVahti = {
 		await Zotero.Promise.delay(this.REQUEST_DELAY);
 	},
 
-	async fetchJSON(url) {
+	// Paced GET that resolves on any status (we inspect it ourselves).
+	async fetch(url, responseType) {
 		await this.politePause();
 		return Zotero.HTTP.request("GET", url, {
-			responseType: "json",
-			timeout: this.HTTP_TIMEOUT,
-			successCodes: false, // resolve on any status; we inspect it ourselves
-		});
-	},
-
-	async fetchText(url) {
-		await this.politePause();
-		return Zotero.HTTP.request("GET", url, {
-			responseType: "text",
+			responseType,
 			timeout: this.HTTP_TIMEOUT,
 			successCodes: false,
 		});
 	},
+
+	fetchJSON(url) { return this.fetch(url, "json"); },
+	fetchText(url) { return this.fetch(url, "text"); },
 
 	async downloadPDF(url) {
 		if (!/^https?:\/\//i.test(url)) {
@@ -377,6 +376,16 @@ var FullVahti = {
 		let bytes = new Uint8Array(xhr.response);
 		if (bytes.length > this.MAX_PDF_BYTES) {
 			this.log("PDF too large (" + bytes.length + " bytes): " + url);
+			return null;
+		}
+		// Reject obvious HTML/XML landing or error pages up front: they can carry
+		// the literal "%PDF-" within the sniff window below and slip through.
+		let head = 0;
+		while (head < bytes.length && (bytes[head] === 0x20 || bytes[head] === 0x09
+			|| bytes[head] === 0x0A || bytes[head] === 0x0D || bytes[head] === 0xEF
+			|| bytes[head] === 0xBB || bytes[head] === 0xBF)) head++;
+		if (bytes[head] === 0x3C) { // '<'
+			this.log("looks like HTML, not a PDF: " + url);
 			return null;
 		}
 		// %PDF- somewhere in the first 1024 bytes (the spec tolerates leading junk)
@@ -406,6 +415,14 @@ var FullVahti = {
 	 * records may be fetched automatically, and this service is how you ask.
 	 * Returns { isOA, pdfURL?, license?, error? }.
 	 */
+	// Read attribute `name` from a single XML tag string, tolerating either
+	// quote style and surrounding whitespace — NCBI's serialization varies.
+	xmlAttr(tag, name) {
+		let m = tag.match(new RegExp(name + "\\s*=\\s*\"([^\"]*)\"", "i"))
+			|| tag.match(new RegExp(name + "\\s*=\\s*'([^']*)'", "i"));
+		return m ? m[1] : null;
+	},
+
 	async pmcOALookup(pmcid) {
 		try {
 			let xhr = await this.fetchText(
@@ -413,23 +430,25 @@ var FullVahti = {
 			);
 			if (xhr.status !== 200) return { isOA: false, error: "HTTP " + xhr.status };
 			let xml = xhr.responseText || "";
-			let err = xml.match(/<error[^>]*\bcode="([^"]+)"/);
-			if (err) {
-				if (/idIsNotOpenAccess|idDoesNotExist/i.test(err[1])) return { isOA: false };
-				return { isOA: false, error: err[1] };
+			let errTag = xml.match(/<error\b[^>]*>/i);
+			if (errTag) {
+				let code = this.xmlAttr(errTag[0], "code") || "unknown";
+				if (/idIsNotOpenAccess|idDoesNotExist/i.test(code)) return { isOA: false };
+				return { isOA: false, error: code };
 			}
-			let license = (xml.match(/<record[^>]*\blicense="([^"]*)"/) || [])[1] || "";
+			let recTag = xml.match(/<record\b[^>]*>/i);
+			let license = (recTag && this.xmlAttr(recTag[0], "license")) || "";
 			let pdfURL = null;
-			let linkRe = /<link\b[^>]*>/g;
+			let linkRe = /<link\b[^>]*>/gi;
 			let m;
 			while ((m = linkRe.exec(xml))) {
-				if (/\bformat="pdf"/.test(m[0])) {
-					let href = (m[0].match(/\bhref="([^"]+)"/) || [])[1];
+				if ((this.xmlAttr(m[0], "format") || "").toLowerCase() === "pdf") {
+					let href = this.xmlAttr(m[0], "href");
 					if (href) {
 						// The OA service often hands out FTP links; NCBI serves the
-						// same tree over HTTPS.
-						pdfURL = href.replace(/^ftp:\/\/ftp\.ncbi\.nlm\.nih\.gov\//i,
-							"https://ftp.ncbi.nlm.nih.gov/");
+						// same tree over HTTPS, so upgrade the scheme for NCBI hosts.
+						pdfURL = href.replace(/^ftp:\/\/(ftp[\w.-]*\.ncbi\.nlm\.nih\.gov)\//i,
+							"https://$1/");
 						break;
 					}
 				}
@@ -521,10 +540,22 @@ var FullVahti = {
 					for (let rec of xhr.response.records) {
 						if (rec.pmcid) { pmcid = rec.pmcid; break; }
 					}
+					// Confirmed absence — distinct from a lookup that failed.
+					if (!pmcid) reason = join(reason, "PMID has no PubMed Central record");
+				}
+				else {
+					// Don't let a transient lookup failure masquerade as "no PMC
+					// record" — flag it for a manual look (check) instead of missing.
+					sawError = true;
+					reason = join(reason, xhr.status === 200
+						? "PubMed Central ID lookup returned an unexpected response"
+						: "PubMed Central ID lookup error (HTTP " + xhr.status + ")");
 				}
 			}
 			catch (e) {
 				this.log("idconv error: " + e);
+				sawError = true;
+				reason = join(reason, "PubMed Central ID lookup failed");
 			}
 		}
 
@@ -557,9 +588,6 @@ var FullVahti = {
 				sawError = true;
 				reason = join(reason, `in the PMC OA subset (${pmcid}) but PDF download failed`);
 			}
-		}
-		else if (pmid && !reason) {
-			reason = "PMID has no PubMed Central record";
 		}
 
 		return { status: sawError ? "check" : "missing", reason, oaStatus };
@@ -625,8 +653,11 @@ var FullVahti = {
 		}
 		let found = rows.filter(r => r.status === "found");
 		if (found.length) {
-			let line = r => esc(r.title)
-				+ (r.license || r.oaStatus ? ` <em>(${esc(r.license || r.oaStatus)})</em>` : "");
+			// Show the license when known; otherwise the OA status (a color like
+			// "gold"/"green"), clearly labelled so the two aren't conflated.
+			let annot = r => r.license ? esc(r.license)
+				: (r.oaStatus ? "OA: " + esc(r.oaStatus) : "");
+			let line = r => esc(r.title) + (annot(r) ? ` <em>(${annot(r)})</em>` : "");
 			html += `<p>Attached: ${found.map(line).join(" · ")}</p>`;
 		}
 
