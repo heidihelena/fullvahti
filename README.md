@@ -1,6 +1,6 @@
 # FullVahti
 
-**Find open-access full-text PDFs for your Zotero references — in two clicks, legally, with a tidy report of what's still missing.**
+**Find open-access full-text PDFs for your Zotero references — in two clicks, with a tidy report of what's still missing.**
 
 FullVahti is a [Zotero](https://www.zotero.org) plugin from the [Vahtian](https://vahtian.com) tool family. You select references (or tag them), FullVahti looks each one up on [Unpaywall](https://unpaywall.org) and [PubMed Central](https://pmc.ncbi.nlm.nih.gov), attaches the free, legal PDF when one exists, and labels every item with what happened:
 
