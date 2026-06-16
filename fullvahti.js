@@ -710,7 +710,10 @@ var FullVahti = {
 		function Ping() {}
 		Ping.prototype = {
 			supportedMethods: ["GET"],
-			init: function () {
+			// MUST be async: in Zotero 9 a synchronous init() that returns an array
+			// never responds (the request hangs forever), while an async init
+			// resolves correctly. The /fullvahti/tag handler is already async — match it.
+			init: async function () {
 				return [200, "application/json", JSON.stringify({
 					plugin: "fullvahti",
 					version: self.version,
