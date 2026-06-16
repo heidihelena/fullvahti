@@ -3,8 +3,8 @@
 		"fullvahti@vahtian.com": {
 			"updates": [
 				{
-					"version": "0.1.6",
-					"update_link": "https://github.com/heidihelena/fullvahti/releases/download/v0.1.6/fullvahti-0.1.6.xpi",
+					"version": "0.1.7",
+					"update_link": "https://github.com/heidihelena/fullvahti/releases/download/v0.1.7/fullvahti-0.1.7.xpi",
 					"applications": {
 						"zotero": {
 							"strict_min_version": "7.0"
