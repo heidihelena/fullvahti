@@ -39,6 +39,10 @@ var FullVahti = {
 		missing: "fulltext:pdf-missing",
 		check: "fulltext:check-needed",
 	},
+	// Writeback (CiteVahti) may only touch tags in the Vahtian namespace. Tags
+	// outside these prefixes are refused, so a leaked token can't write arbitrary
+	// tags into someone's library.
+	ALLOWED_TAG_PREFIXES: ["cite:", "fulltext:", "GRADE:", "RoB2:", "ROBINS-I:", "Quality:"],
 	// A real OA article PDF is essentially always larger than this; smaller "PDFs"
 	// are almost always publisher error/landing stubs, so we reject them (-> check).
 	MIN_PDF_BYTES: 10000,
@@ -189,7 +193,7 @@ var FullVahti = {
 		let delayMs = parseInt(this.getPref("delayMs")) || 400;
 		let rows = [];
 		let counts = { found: 0, missing: 0, check: 0 };
-		let seen = new Set();
+		let seen = new Map(); // dedup key -> resolved status, so duplicates can mirror it
 
 		try {
 			for (let i = 0; i < items.length; i++) {
@@ -202,8 +206,19 @@ var FullVahti = {
 				let pmid = this.extractPMID(item);
 				let pmcid = this.extractPMCID(item);
 				let dedup = doi || pmid || pmcid || item.key;
-				if (seen.has(dedup)) continue; // collapse duplicate items
-				seen.add(dedup);
+				if (seen.has(dedup)) {
+					// Same paper as an item already handled this run. Don't re-fetch,
+					// but still label it (mirror the original's outcome) so every item
+					// ends up tagged — never silently skipped.
+					let status = seen.get(dedup);
+					await this.setStatusTag(item, this.STATUS_BY_KEY[status]);
+					rows.push({ key: item.key, title, doi: doi || "", pmid: pmid || "",
+						status, reason: "duplicate of an item already processed this run",
+						source: "", license: "", oaStatus: "", duplicate: true });
+					await Zotero.Promise.delay(delayMs);
+					continue;
+				}
+				seen.set(dedup, null);
 
 				let row = { key: item.key, title, doi: doi || "", pmid: pmid || "",
 					status: "", reason: "", source: "", license: "", oaStatus: "" };
@@ -235,6 +250,7 @@ var FullVahti = {
 				}
 
 				counts[row.status]++;
+				seen.set(dedup, row.status); // later duplicates mirror this outcome
 				await this.setStatusTag(item, this.STATUS_BY_KEY[row.status]);
 				rows.push(row);
 				await Zotero.Promise.delay(delayMs);
@@ -356,6 +372,38 @@ var FullVahti = {
 	fetchJSON(url) { return this.fetch(url, "json"); },
 	fetchText(url) { return this.fetch(url, "text"); },
 
+	// Pure: judge whether a downloaded byte buffer is a real OA PDF rather than an
+	// HTML landing/error page or a truncated stub. Side-effect-free so it can be
+	// unit-tested without the network. Returns { ok, reason }.
+	sniffPDFBytes(bytes) {
+		if (!bytes || bytes.length === 0) return { ok: false, reason: "empty response" };
+		if (bytes.length > this.MAX_PDF_BYTES) {
+			return { ok: false, reason: "too large (" + bytes.length + " bytes)" };
+		}
+		// Reject obvious HTML/XML landing or error pages up front: they can carry
+		// the literal "%PDF-" within the sniff window below and slip through.
+		let head = 0;
+		while (head < bytes.length && (bytes[head] === 0x20 || bytes[head] === 0x09
+			|| bytes[head] === 0x0A || bytes[head] === 0x0D || bytes[head] === 0xEF
+			|| bytes[head] === 0xBB || bytes[head] === 0xBF)) head++;
+		if (bytes[head] === 0x3C) return { ok: false, reason: "looks like HTML, not a PDF" }; // '<'
+		// %PDF- somewhere in the first 1024 bytes (the spec tolerates leading junk)
+		let isPDF = false;
+		let limit = Math.min(bytes.length - 4, 1024);
+		for (let i = 0; i < limit; i++) {
+			if (bytes[i] === 0x25 && bytes[i + 1] === 0x50 && bytes[i + 2] === 0x44
+				&& bytes[i + 3] === 0x46 && bytes[i + 4] === 0x2D) {
+				isPDF = true;
+				break;
+			}
+		}
+		if (!isPDF) return { ok: false, reason: "not a PDF" };
+		if (bytes.length < this.MIN_PDF_BYTES) {
+			return { ok: false, reason: "too small (" + bytes.length + " bytes), likely an error stub" };
+		}
+		return { ok: true, reason: "" };
+	},
+
 	async downloadPDF(url) {
 		if (!/^https?:\/\//i.test(url)) {
 			this.log("blocked non-http(s) PDF URL: " + url);
@@ -374,36 +422,9 @@ var FullVahti = {
 			return null;
 		}
 		let bytes = new Uint8Array(xhr.response);
-		if (bytes.length > this.MAX_PDF_BYTES) {
-			this.log("PDF too large (" + bytes.length + " bytes): " + url);
-			return null;
-		}
-		// Reject obvious HTML/XML landing or error pages up front: they can carry
-		// the literal "%PDF-" within the sniff window below and slip through.
-		let head = 0;
-		while (head < bytes.length && (bytes[head] === 0x20 || bytes[head] === 0x09
-			|| bytes[head] === 0x0A || bytes[head] === 0x0D || bytes[head] === 0xEF
-			|| bytes[head] === 0xBB || bytes[head] === 0xBF)) head++;
-		if (bytes[head] === 0x3C) { // '<'
-			this.log("looks like HTML, not a PDF: " + url);
-			return null;
-		}
-		// %PDF- somewhere in the first 1024 bytes (the spec tolerates leading junk)
-		let isPDF = false;
-		let limit = Math.min(bytes.length - 4, 1024);
-		for (let i = 0; i < limit; i++) {
-			if (bytes[i] === 0x25 && bytes[i + 1] === 0x50 && bytes[i + 2] === 0x44
-				&& bytes[i + 3] === 0x46 && bytes[i + 4] === 0x2D) {
-				isPDF = true;
-				break;
-			}
-		}
-		if (!isPDF) {
-			this.log("not a PDF: " + url);
-			return null;
-		}
-		if (bytes.length < this.MIN_PDF_BYTES) {
-			this.log("PDF too small (" + bytes.length + " bytes), likely an error stub: " + url);
+		let verdict = this.sniffPDFBytes(bytes);
+		if (!verdict.ok) {
+			this.log("rejected " + url + ": " + verdict.reason);
 			return null;
 		}
 		return bytes;
@@ -632,7 +653,10 @@ var FullVahti = {
 	async writeReportNote(rows, counts) {
 		let esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 		let when = new Date().toLocaleString();
-		let problems = rows.filter(r => r.status !== "found");
+		// Duplicates were tagged to match their original; don't repeat them in the
+		// actionable lists below (they're the same paper, already counted once).
+		let problems = rows.filter(r => r.status !== "found" && !r.duplicate);
+		let dupes = rows.filter(r => r.duplicate);
 
 		let html = `<h1>FullVahti report — ${esc(when)}</h1>`
 			+ `<p><strong>${counts.found}</strong> PDF(s) attached · `
@@ -640,6 +664,10 @@ var FullVahti = {
 			+ `<strong>${counts.check}</strong> needing a manual look.</p>`
 			+ `<p>Open access only — paywalled items are listed below for interlibrary loan, `
 			+ `not bypassed. Items are tagged fulltext:pdf-found / pdf-missing / check-needed.</p>`;
+		if (dupes.length) {
+			html += `<p>${dupes.length} duplicate item(s) were tagged to match the original `
+				+ `and omitted from the lists below.</p>`;
+		}
 
 		if (problems.length) {
 			html += "<h2>Still to get (" + problems.length + ")</h2><ul>";
@@ -651,7 +679,7 @@ var FullVahti = {
 			}
 			html += "</ul>";
 		}
-		let found = rows.filter(r => r.status === "found");
+		let found = rows.filter(r => r.status === "found" && !r.duplicate);
 		if (found.length) {
 			// Show the license when known; otherwise the OA status (a color like
 			// "gold"/"green"), clearly labelled so the two aren't conflated.
@@ -666,6 +694,10 @@ var FullVahti = {
 		note.setNote(html);
 		note.addTag("fullvahti:report");
 		await note.saveTx();
+	},
+
+	tagAllowed(tag) {
+		return this.ALLOWED_TAG_PREFIXES.some(p => String(tag).startsWith(p));
 	},
 
 	// -----------------------------------------------------------------
@@ -705,6 +737,14 @@ var FullVahti = {
 				}
 				if (!data.itemKey || (!Array.isArray(data.add) && !Array.isArray(data.remove))) {
 					return deny(400, "expected { token, itemKey, add: [tags] and/or remove: [tags] }");
+				}
+				// Only Vahtian-namespace tags may be written, even with a valid token.
+				let bad = [...(data.add || []), ...(data.remove || [])]
+					.map(String)
+					.filter(t => !self.tagAllowed(t));
+				if (bad.length) {
+					return deny(400, "tags must use an allowed Vahtian prefix ("
+						+ self.ALLOWED_TAG_PREFIXES.join(", ") + "); rejected: " + bad.join(", "));
 				}
 				let item = Zotero.Items.getByLibraryAndKey(Zotero.Libraries.userLibraryID, data.itemKey);
 				if (!item) {

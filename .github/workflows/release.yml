@@ -11,6 +11,11 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Only ever publish from a real version tag (v*) or a manual run on main —
+    # never from an arbitrary branch a dispatch happens to target.
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
 
@@ -22,6 +27,15 @@ jobs:
           # On a tag push, the pushed tag must match manifest.json.
           if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
             echo "manifest.json version ($VERSION) != tag ($GITHUB_REF_NAME)" >&2
+            exit 1
+          fi
+
+      - name: Refuse to overwrite an existing release
+        # An auto-updating XPI must be immutable: a published version is never
+        # rebuilt or replaced. Bump manifest.json to ship again.
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — releases are immutable. Bump the version in manifest.json." >&2
             exit 1
           fi
 
@@ -37,4 +51,5 @@ jobs:
         with:
           tag_name: ${{ env.TAG }}
           files: dist/*.xpi
+          fail_on_unmatched_files: true
           generate_release_notes: true

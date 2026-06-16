@@ -1,0 +1,9 @@
+{
+	"name": "fullvahti",
+	"private": true,
+	"description": "Test harness for the FullVahti Zotero plugin. The plugin itself is plain JS with no build step; this file exists only to run the unit tests.",
+	"scripts": {
+		"test": "node --test"
+	},
+	"license": "Apache-2.0"
+}
