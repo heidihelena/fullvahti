@@ -1,7 +1,7 @@
 {
 	"manifest_version": 2,
 	"name": "FullVahti",
-	"version": "0.1.12",
+	"version": "0.1.13",
 	"description": "Finds open-access full-text PDFs for your Zotero items. Adds status tags and a run report, and is CiteVahti's previewable, audited, undoable write-back companion. Part of the Vahtian tool family.",
 	"homepage_url": "https://vahtian.com",
 	"author": "Heidi Andersén",
