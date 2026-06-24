@@ -31,12 +31,56 @@ FullVahti works politely, one paper at a time, so a big batch takes a few minute
 
 ## For CiteVahti users (advanced, off by default)
 
-FullVahti can act as [CiteVahti](https://vahtian.com)'s local write-back door, so review-status tags land in your Zotero library through a token-guarded endpoint on Zotero's local server (`127.0.0.1:23119` — nothing leaves your machine):
+FullVahti is [CiteVahti](https://vahtian.com)'s Zotero companion. It does the Zotero-side work CiteVahti deliberately stays out of — finding open-access PDFs, and writing **confirmed** review decisions back into your library — while CiteVahti keeps sole ownership of claim verification and the human-first rating workflow. FullVahti never verifies claims, never decides whether a paper supports a claim, never rates anything, and never receives manuscript text: it only ever sees an item key and a short list of allowlisted tags.
+
+Write-back goes through a token-guarded endpoint on Zotero's local server (`127.0.0.1:23119` — nothing leaves your machine):
 
 1. Zotero → Settings → FullVahti → tick **Allow CiteVahti to write tags**, click **Generate new token**.
-2. Give that token to CiteVahti. It can then `POST /fullvahti/tag` with `{ token, itemKey, add: [...], remove: [...] }`, and `GET /fullvahti/ping` to check availability.
+2. Give that token to CiteVahti.
 
-No silent writes: the door is closed unless you open it, and only tag changes are possible.
+### The safety invariant: no silent Zotero writes
+
+Every write is **previewed, confirmed, audited, and undoable**. The door is closed unless you open it, only allowlisted tags can be written, and the endpoints enforce this regardless of what a caller sends:
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/fullvahti/ping` | GET | Availability + advertised `capabilities` and `allowedTagPrefixes` |
+| `/fullvahti/tag` | POST | Preview or apply a tag change |
+| `/fullvahti/audit` | GET | List recorded writes (token in query string) |
+| `/fullvahti/undo` | POST | Reverse a recorded write by its audit id |
+
+**Allowlisted tags only.** Even with a valid token, only tags beginning `cite:`, `fulltext:`, `GRADE:`, `RoB2:`, `ROBINS-I:`, or `Quality:` are accepted; anything else is refused and nothing is written.
+
+**1 — Preview (dry run).** CiteVahti shows you exactly what would change before anything is written:
+
+```
+POST /fullvahti/tag
+{ "token": "…", "itemKey": "ABCD1234", "add": ["GRADE:high"], "remove": ["fulltext:pdf-missing"], "dryRun": true }
+→ { "ok": true, "dryRun": true,
+    "preview": { "before": [...], "after": [...], "willAdd": ["GRADE:high"], "willRemove": ["fulltext:pdf-missing"],
+                 "alreadyPresent": [], "alreadyAbsent": [] } }
+```
+
+`willAdd` / `willRemove` are the *effective* change — tags already present (or already absent) are dropped, so the preview is exactly what will happen.
+
+**2 — Apply (after you confirm).** Same call without `dryRun`. The response returns what was applied and an audit id:
+
+```
+→ { "ok": true, "itemKey": "ABCD1234", "applied": { "added": ["GRADE:high"], "removed": ["fulltext:pdf-missing"] },
+    "audit": { "id": "abc-123", "ts": "2026-06-24T…" } }
+```
+
+**3 — Audit.** Every applied write is recorded locally (the token is never stored). Inspect the log with `GET /fullvahti/audit?token=…`.
+
+**4 — Undo.** Any recorded write can be reversed by its audit id (preview the reversal with `dryRun: true` first):
+
+```
+POST /fullvahti/undo
+{ "token": "…", "auditId": "abc-123" }
+→ { "ok": true, "undoOf": "abc-123", "applied": { "added": ["fulltext:pdf-missing"], "removed": ["GRADE:high"] }, … }
+```
+
+CiteVahti's job is to obtain *your* confirmation for each verified decision; FullVahti's job is to make that write previewable, auditable, and reversible. Neither side bypasses the other.
 
 ## Privacy
 

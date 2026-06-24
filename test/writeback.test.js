@@ -83,3 +83,109 @@ test("applies allowed add/remove with a valid token", async () => {
 	assert.ok(item._tags.has("GRADE:high"));
 	assert.ok(!item._tags.has("fulltext:pdf-missing"));
 });
+
+// ---------------------------------------------------------------------------
+// Safety invariant: preview before write, audit each write, undo any write.
+// These share one sandbox so the audit log persists across calls.
+// ---------------------------------------------------------------------------
+const WB_PREFS = {
+	"extensions.fullvahti.writebackEnabled": true,
+	"extensions.fullvahti.writebackToken": "secret",
+};
+
+function writebackHarness(item) {
+	const itemsByKey = item ? { [item.key]: item } : {};
+	const { fv, sandbox, prefStore } = load({ prefs: { ...WB_PREFS }, itemsByKey });
+	fv.registerEndpoints();
+	const eps = sandbox.Zotero.Server.Endpoints;
+	const call = (path, requestData) => async () => {
+		const ep = new eps[path]();
+		const [code, , json] = await ep.init(requestData);
+		return [code, JSON.parse(json)];
+	};
+	return {
+		fv,
+		prefStore,
+		tag: (body) => call("/fullvahti/tag", { data: body })(),
+		undo: (body) => call("/fullvahti/undo", { data: body })(),
+		audit: (query) => call("/fullvahti/audit", { query })(),
+	};
+}
+
+test("dryRun previews the effective change without writing", async () => {
+	const item = makeItem({}, { key: "K", tags: ["cite:closer-look"] });
+	const h = writebackHarness(item);
+	const [code, body] = await h.tag({
+		token: "secret", itemKey: "K", dryRun: true,
+		add: ["GRADE:high", "cite:closer-look"], // second one already present
+		remove: ["fulltext:pdf-missing"],        // not present
+	});
+	assert.equal(code, 200);
+	assert.equal(body.dryRun, true);
+	assert.deepEqual(body.preview.willAdd, ["GRADE:high"]);
+	assert.deepEqual(body.preview.willRemove, []);       // wasn't present
+	assert.deepEqual(body.preview.alreadyPresent, ["cite:closer-look"]);
+	assert.deepEqual(body.preview.alreadyAbsent, ["fulltext:pdf-missing"]);
+	// Nothing was written, and no audit record was created.
+	assert.ok(!item._tags.has("GRADE:high"));
+	assert.equal(h.prefStore["extensions.fullvahti.auditLog"], undefined);
+});
+
+test("an applied write creates an audit record retrievable via /fullvahti/audit", async () => {
+	const item = makeItem({}, { key: "K", tags: [] });
+	const h = writebackHarness(item);
+	const [code, body] = await h.tag({ token: "secret", itemKey: "K", add: ["GRADE:high"] });
+	assert.equal(code, 200);
+	assert.ok(body.audit && body.audit.id);
+	assert.deepEqual(body.applied.added, ["GRADE:high"]);
+
+	// audit endpoint is token-gated
+	assert.equal((await h.audit({ token: "nope" }))[0], 403);
+	const [acode, abody] = await h.audit({ token: "secret" });
+	assert.equal(acode, 200);
+	assert.equal(abody.count, 1);
+	assert.equal(abody.records[0].itemKey, "K");
+	assert.deepEqual(abody.records[0].added, ["GRADE:high"]);
+	// the token is never persisted in the audit log
+	assert.equal(abody.records[0].token, undefined);
+});
+
+test("undo reverses a recorded write and is itself audited", async () => {
+	const item = makeItem({}, { key: "K", tags: ["fulltext:pdf-missing"] });
+	const h = writebackHarness(item);
+	const [, applied] = await h.tag({
+		token: "secret", itemKey: "K",
+		add: ["GRADE:high"], remove: ["fulltext:pdf-missing"],
+	});
+	assert.ok(item._tags.has("GRADE:high"));
+	assert.ok(!item._tags.has("fulltext:pdf-missing"));
+
+	const auditId = applied.audit.id;
+	// preview the undo first
+	const [pcode, preview] = await h.undo({ token: "secret", auditId, dryRun: true });
+	assert.equal(pcode, 200);
+	assert.equal(preview.dryRun, true);
+	assert.ok(item._tags.has("GRADE:high")); // still unchanged after a dry run
+
+	const [code, body] = await h.undo({ token: "secret", auditId });
+	assert.equal(code, 200);
+	assert.equal(body.undoOf, auditId);
+	// state restored to before the original write
+	assert.ok(!item._tags.has("GRADE:high"));
+	assert.ok(item._tags.has("fulltext:pdf-missing"));
+
+	// undoing the same record again is refused
+	assert.equal((await h.undo({ token: "secret", auditId }))[0], 409);
+
+	// both the write and its reversal are in the log
+	const [, abody] = await h.audit({ token: "secret" });
+	assert.equal(abody.count, 2);
+	assert.equal(abody.records[1].undoOf, auditId);
+});
+
+test("undo rejects unknown / wrong-token / disabled", async () => {
+	const item = makeItem({}, { key: "K", tags: [] });
+	const h = writebackHarness(item);
+	assert.equal((await h.undo({ token: "secret", auditId: "nope" }))[0], 404);
+	assert.equal((await h.undo({ token: "wrong", auditId: "x" }))[0], 403);
+});

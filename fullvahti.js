@@ -12,8 +12,12 @@
  * that list is what feeds interlibrary loan requests and PRISMA flow diagrams.
  * No per-item notes: the attached PDF is its own record.
  *
- * Write: a token-guarded endpoint on Zotero's local server so CiteVahti's gated,
- * audited writeback can add/remove tags. Default OFF. No silent writes.
+ * Write: a token-guarded endpoint on Zotero's local server so CiteVahti's gated
+ * writeback can add/remove tags. Default OFF. No silent writes — every write is
+ * previewable (dryRun), restricted to an allowlisted tag namespace, recorded to a
+ * local audit log, and reversible via /fullvahti/undo. FullVahti never verifies
+ * claims, rates anything, or sees manuscript text: it only receives an item key
+ * and allowlisted tags, after CiteVahti has obtained the user's confirmation.
  *
  * Stance (shared with the Vahtian spine): open access only — paywalled items are
  * reported as missing, never bypassed. PMC downloads are restricted to the PMC
@@ -43,6 +47,10 @@ var FullVahti = {
 	// outside these prefixes are refused, so a leaked token can't write arbitrary
 	// tags into someone's library.
 	ALLOWED_TAG_PREFIXES: ["cite:", "fulltext:", "GRADE:", "RoB2:", "ROBINS-I:", "Quality:"],
+	// Every applied writeback is recorded here (a JSON array, newest last) so each
+	// change is auditable and undoable. Bounded so the log can't grow without limit.
+	AUDIT_PREF: "auditLog",
+	AUDIT_MAX: 500,
 	// A real OA article PDF is essentially always larger than this; smaller "PDFs"
 	// are almost always publisher error/landing stubs, so we reject them (-> check).
 	MIN_PDF_BYTES: 10000,
@@ -700,12 +708,97 @@ var FullVahti = {
 		return this.ALLOWED_TAG_PREFIXES.some(p => String(tag).startsWith(p));
 	},
 
+	// Current tags on an item as a plain string array. Zotero's getTags() yields
+	// [{tag, type}]; tolerate a plain-string variant too (and any read failure).
+	itemTags(item) {
+		try {
+			return (item.getTags() || []).map(t => (typeof t === "string" ? t : t.tag));
+		}
+		catch (e) {
+			return [];
+		}
+	},
+
+	// Compute the change a tag request would actually make against current tags:
+	// adds already present and removes already absent are no-ops and dropped, so
+	// the recorded effect is exactly what changed — which is also what undo reverses.
+	planTagChange(item, addReq, removeReq) {
+		let before = this.itemTags(item);
+		let beforeSet = new Set(before);
+		let add = (addReq || []).map(String);
+		let remove = (removeReq || []).map(String);
+		let willAdd = add.filter(t => !beforeSet.has(t));
+		let willRemove = remove.filter(t => beforeSet.has(t));
+		let after = before.filter(t => !willRemove.includes(t)).concat(willAdd);
+		return {
+			itemKey: item.key,
+			before,
+			after,
+			willAdd,
+			willRemove,
+			alreadyPresent: add.filter(t => beforeSet.has(t)),
+			alreadyAbsent: remove.filter(t => !beforeSet.has(t)),
+		};
+	},
+
+	// -----------------------------------------------------------------
+	// Audit log — every applied writeback is recorded so it is auditable
+	// and undoable. Stored as a bounded JSON array in a local pref.
+	// -----------------------------------------------------------------
+	readAudit() {
+		let raw = this.getPref(this.AUDIT_PREF);
+		if (!raw) return [];
+		try {
+			let v = JSON.parse(raw);
+			return Array.isArray(v) ? v : [];
+		}
+		catch (e) {
+			this.log("audit log unreadable, starting fresh: " + e);
+			return [];
+		}
+	},
+
+	writeAudit(log) {
+		if (log.length > this.AUDIT_MAX) log = log.slice(log.length - this.AUDIT_MAX);
+		this.setPref(this.AUDIT_PREF, JSON.stringify(log));
+	},
+
+	newAuditId() {
+		let rnd = Math.random().toString(36).slice(2, 8);
+		return Date.now().toString(36) + "-" + rnd;
+	},
+
+	// Append an audit record and return it (with its generated id + timestamp).
+	// The token is never stored — only what changed, and to which item.
+	recordAudit(entry) {
+		let rec = Object.assign({ id: this.newAuditId(), ts: new Date().toISOString() }, entry);
+		let log = this.readAudit();
+		log.push(rec);
+		this.writeAudit(log);
+		this.log("writeback audit " + rec.id + ": " + rec.itemKey
+			+ " +[" + (rec.added || []).join(",") + "] -[" + (rec.removed || []).join(",") + "]"
+			+ (rec.undoOf ? " (undo of " + rec.undoOf + ")" : ""));
+		return rec;
+	},
+
 	// -----------------------------------------------------------------
 	// WriteVahti — gated local writeback endpoint for CiteVahti.
 	// Default OFF. Local server only (127.0.0.1:23119). Token required.
+	//
+	// The safety invariant (no silent Zotero writes) is enforced here, not by
+	// the caller: a write is only applied when writeback is enabled AND the token
+	// matches AND every tag is in the allowlist. Callers preview first with
+	// dryRun:true (nothing is written), and any applied write is recorded to the
+	// audit log and reversible through /fullvahti/undo.
 	// -----------------------------------------------------------------
+	tokenOK(data) {
+		let token = this.getPref("writebackToken");
+		return !!token && data && data.token === token;
+	},
+
 	registerEndpoints() {
 		let self = this;
+		let deny = (code, error) => [code, "application/json", JSON.stringify({ ok: false, error })];
 
 		function Ping() {}
 		Ping.prototype = {
@@ -718,6 +811,10 @@ var FullVahti = {
 					plugin: "fullvahti",
 					version: self.version,
 					writeback: !!self.getPref("writebackEnabled"),
+					// Let CiteVahti detect the safety features it can rely on.
+					capabilities: { dryRun: true, audit: true, undo: true },
+					allowedTagPrefixes: self.ALLOWED_TAG_PREFIXES,
+					endpoints: ["/fullvahti/ping", "/fullvahti/tag", "/fullvahti/audit", "/fullvahti/undo"],
 				})];
 			},
 		};
@@ -729,17 +826,15 @@ var FullVahti = {
 			supportedDataTypes: ["application/json"],
 			permitBookmarklet: false,
 			init: async function (requestData) {
-				let deny = (code, error) => [code, "application/json", JSON.stringify({ ok: false, error })];
 				if (!self.getPref("writebackEnabled")) {
 					return deny(403, "writeback disabled — enable it in Zotero Settings → FullVahti");
 				}
-				let token = self.getPref("writebackToken");
 				let data = requestData.data || {};
-				if (!token || data.token !== token) {
+				if (!self.tokenOK(data)) {
 					return deny(403, "missing or wrong token — copy it from Zotero Settings → FullVahti");
 				}
 				if (!data.itemKey || (!Array.isArray(data.add) && !Array.isArray(data.remove))) {
-					return deny(400, "expected { token, itemKey, add: [tags] and/or remove: [tags] }");
+					return deny(400, "expected { token, itemKey, add: [tags] and/or remove: [tags], dryRun?: bool }");
 				}
 				// Only Vahtian-namespace tags may be written, even with a valid token.
 				let bad = [...(data.add || []), ...(data.remove || [])]
@@ -753,19 +848,131 @@ var FullVahti = {
 				if (!item) {
 					return deny(404, "no item with key " + data.itemKey);
 				}
-				for (let t of (data.remove || [])) item.removeTag(String(t));
-				for (let t of (data.add || [])) item.addTag(String(t));
+
+				let plan = self.planTagChange(item, data.add, data.remove);
+
+				// Preview only — nothing is written. This is how a caller (and through
+				// it, the user) confirms a change before it touches the library.
+				if (data.dryRun) {
+					return [200, "application/json", JSON.stringify({ ok: true, dryRun: true, preview: plan })];
+				}
+
+				for (let t of plan.willRemove) item.removeTag(t);
+				for (let t of plan.willAdd) item.addTag(t);
 				await item.saveTx();
-				self.log("writeback: " + data.itemKey
-					+ " +[" + (data.add || []).join(",") + "] -[" + (data.remove || []).join(",") + "]");
-				return [200, "application/json", JSON.stringify({ ok: true, itemKey: data.itemKey })];
+
+				let audit = self.recordAudit({
+					itemKey: data.itemKey,
+					added: plan.willAdd,
+					removed: plan.willRemove,
+					before: plan.before,
+					note: typeof data.note === "string" ? data.note.slice(0, 500) : undefined,
+				});
+				return [200, "application/json", JSON.stringify({
+					ok: true,
+					itemKey: data.itemKey,
+					applied: { added: plan.willAdd, removed: plan.willRemove },
+					audit: { id: audit.id, ts: audit.ts },
+				})];
 			},
 		};
 		Zotero.Server.Endpoints["/fullvahti/tag"] = Tag;
+
+		function Audit() {}
+		Audit.prototype = {
+			supportedMethods: ["GET"],
+			init: async function (requestData) {
+				if (!self.getPref("writebackEnabled")) {
+					return deny(403, "writeback disabled — enable it in Zotero Settings → FullVahti");
+				}
+				// The audit log lists item keys and review decisions, so it is
+				// token-gated like writes. Token comes via the query string.
+				let q = (requestData && requestData.query) || {};
+				let provided = typeof q === "string" ? new URLSearchParams(q).get("token") : q.token;
+				if (!self.tokenOK({ token: provided })) {
+					return deny(403, "missing or wrong token");
+				}
+				let log = self.readAudit();
+				let limit = 100;
+				if (typeof q === "object" && q.limit) {
+					let n = parseInt(q.limit, 10);
+					if (n > 0) limit = Math.min(n, self.AUDIT_MAX);
+				}
+				return [200, "application/json", JSON.stringify({
+					ok: true,
+					count: log.length,
+					records: log.slice(-limit),
+				})];
+			},
+		};
+		Zotero.Server.Endpoints["/fullvahti/audit"] = Audit;
+
+		function Undo() {}
+		Undo.prototype = {
+			supportedMethods: ["POST"],
+			supportedDataTypes: ["application/json"],
+			permitBookmarklet: false,
+			init: async function (requestData) {
+				if (!self.getPref("writebackEnabled")) {
+					return deny(403, "writeback disabled — enable it in Zotero Settings → FullVahti");
+				}
+				let data = requestData.data || {};
+				if (!self.tokenOK(data)) {
+					return deny(403, "missing or wrong token");
+				}
+				if (!data.auditId) {
+					return deny(400, "expected { token, auditId, dryRun?: bool }");
+				}
+				let log = self.readAudit();
+				let rec = log.find(r => r.id === data.auditId);
+				if (!rec) return deny(404, "no audit record " + data.auditId);
+				if (rec.undoOf) return deny(400, "record " + data.auditId + " is itself an undo — undo the original instead");
+				if (rec.undone) return deny(409, "record " + data.auditId + " was already undone");
+
+				let item = Zotero.Items.getByLibraryAndKey(Zotero.Libraries.userLibraryID, rec.itemKey);
+				if (!item) return deny(404, "item " + rec.itemKey + " no longer exists");
+
+				// Reverse the recorded effect: re-add what was removed, remove what
+				// was added — but only where it still applies, so undo is idempotent
+				// against later manual edits.
+				let plan = self.planTagChange(item, rec.removed, rec.added);
+
+				if (data.dryRun) {
+					return [200, "application/json", JSON.stringify({
+						ok: true, dryRun: true, undoOf: rec.id, preview: plan,
+					})];
+				}
+
+				for (let t of plan.willRemove) item.removeTag(t);
+				for (let t of plan.willAdd) item.addTag(t);
+				await item.saveTx();
+
+				// Mark the original undone, then record the reversal as its own entry.
+				rec.undone = true;
+				self.writeAudit(log);
+				let audit = self.recordAudit({
+					itemKey: rec.itemKey,
+					added: plan.willAdd,
+					removed: plan.willRemove,
+					before: plan.before,
+					undoOf: rec.id,
+				});
+				return [200, "application/json", JSON.stringify({
+					ok: true,
+					itemKey: rec.itemKey,
+					undoOf: rec.id,
+					applied: { added: plan.willAdd, removed: plan.willRemove },
+					audit: { id: audit.id, ts: audit.ts },
+				})];
+			},
+		};
+		Zotero.Server.Endpoints["/fullvahti/undo"] = Undo;
 	},
 
 	unregisterEndpoints() {
 		delete Zotero.Server.Endpoints["/fullvahti/ping"];
 		delete Zotero.Server.Endpoints["/fullvahti/tag"];
+		delete Zotero.Server.Endpoints["/fullvahti/audit"];
+		delete Zotero.Server.Endpoints["/fullvahti/undo"];
 	},
 };

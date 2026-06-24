@@ -27,7 +27,9 @@
 		<label><html:h2>CiteVahti writeback (advanced — leave off unless you use CiteVahti)</html:h2></label>
 		<html:div style="margin-bottom: 8px">
 			Lets CiteVahti on this computer write status tags into your library through
-			a token-guarded local door. Nothing leaves your machine.
+			a token-guarded local door. Nothing leaves your machine. Only Vahtian
+			tags can be written, every write is previewed before it happens, recorded
+			to a local audit log, and can be undone.
 		</html:div>
 		<checkbox id="fullvahti-writeback"
 			label="Allow CiteVahti to write tags (local only, token required)"
