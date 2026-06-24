@@ -31,20 +31,25 @@ FullVahti works politely, one paper at a time, so a big batch takes a few minute
 
 ## Check for retractions
 
-A retracted paper is exactly what a screening workflow must catch. FullVahti can flag references that PubMed records as retracted:
+A retracted paper is exactly what a screening workflow must catch — and with well over a hundred thousand retractions issued in 2024–2025 alone (the Hindawi/Wiley, Sage and IEEE sham-paper sweeps), many of them **never indexed in PubMed**, this matters more than ever. FullVahti flags retracted references using two sources:
+
+- **PubMed** (precise — the "Retracted Publication" publication type), and
+- **Crossref**, which now carries the [Retraction Watch database](https://www.crossref.org/blog/retraction-watch-retractions-now-in-the-crossref-api/) — this catches the mass retractions PubMed doesn't list.
+
+How to run it:
 
 - **For a few papers:** select them, right-click → **FullVahti: Check for Retractions**.
 - **For a batch:** tag them and use **Settings → FullVahti → Check tagged items for retractions**, or **Tools → FullVahti: Check items tagged … for retractions**.
 
-Every item is labelled, and you get a report note that calls out the retracted ones:
+Every item is labelled, and you get a report note that calls out the retracted ones (with where the flag came from):
 
 | Tag | Meaning |
 |---|---|
-| `retraction:retracted` | PubMed lists this as a Retracted Publication |
-| `retraction:none` | No retraction recorded in PubMed |
-| `retraction:check-needed` | No PubMed record found, or the lookup failed — worth a human look |
+| `retraction:retracted` | PubMed or Crossref/Retraction Watch records this as retracted |
+| `retraction:none` | No retraction recorded in either source |
+| `retraction:check-needed` | No record found, or the lookup failed — worth a human look |
 
-FullVahti only *reads* the status from PubMed — it never decides retraction itself.
+FullVahti only *reads* the status from PubMed and Crossref — it never decides retraction itself. For each DOI it checks PubMed first, then Crossref; for a DOI-only item it resolves a PMID via PubMed's search before falling back to Crossref.
 
 ## Getting paywalled papers through your library
 
@@ -109,7 +114,7 @@ CiteVahti's job is to obtain *your* confirmation for each verified decision; Ful
 
 ## Privacy
 
-- Lookups go directly from your computer to Unpaywall and NCBI/Europe PMC, carrying the paper's DOI/PMID; your contact email goes only to the APIs that ask for it (Unpaywall, NCBI), never to the sites PDFs are downloaded from. Nothing else, to no one else.
+- Lookups go directly from your computer to Unpaywall, NCBI/Europe PMC, and Crossref (for retraction status), carrying the paper's DOI/PMID; your contact email goes only to the APIs that ask for it (Unpaywall, NCBI, Crossref), never to the sites PDFs are downloaded from. Nothing else, to no one else.
 - No analytics, no accounts, no Vahtian servers involved.
 
 ## Development

@@ -25,8 +25,9 @@
  *
  * Where data goes (and nowhere else): Zotero metadata is read locally. Each
  * item's DOI/PMID — plus the contact email where an API asks for it — is sent
- * to the OA-resolution services (Unpaywall, NCBI, Europe PMC). Resolved PDF
- * URLs are fetched from their host sites, without the email.
+ * to the OA-resolution services (Unpaywall, NCBI, Europe PMC) and, for the
+ * retraction check, to NCBI and Crossref (which carries the Retraction Watch
+ * database). Resolved PDF URLs are fetched from their host sites, without the email.
  */
 
 var FullVahti = {
@@ -464,12 +465,83 @@ var FullVahti = {
 		return isRetracted ? "retracted" : "none";
 	},
 
+	// Pure: decide whether a Crossref work message records a retraction.
+	// Crossref puts the retraction in the *notice's* `update-to` (its DOI points
+	// to the retracted article) and mirrors it on the *article* as `updated-by`;
+	// each entry has type "retraction" and source "publisher" | "retraction-watch".
+	// We scan every documented key variant so it fires whichever DOI was cited.
+	// Returns { retracted, noticeDOI?, rwSource? }. Side-effect-free (testable).
+	retractionFromCrossref(message) {
+		if (!message) return { retracted: false };
+		let entries = [];
+		for (let k of ["update-to", "updated-by", "update-by", "updated_by", "update_to"]) {
+			if (Array.isArray(message[k])) entries.push(...message[k]);
+		}
+		for (let u of entries) {
+			if (u && /retract/i.test(String(u.type || ""))) {
+				return { retracted: true, noticeDOI: u.DOI || u.doi || "", rwSource: u.source || "" };
+			}
+		}
+		let rel = message.relation || {};
+		for (let key of Object.keys(rel)) {
+			if (/retract/i.test(key) && Array.isArray(rel[key]) && rel[key].length) {
+				return { retracted: true };
+			}
+		}
+		return { retracted: false };
+	},
+
+	// Query Crossref for a DOI and read its retraction status. Crossref now carries
+	// the Retraction Watch database, so this catches retractions PubMed doesn't
+	// index (e.g. the 2024–2025 mass sham-paper retractions). Returns
+	// { found, retracted?, rwSource? } or { error }.
+	async checkRetractionCrossref(doi, email) {
+		if (!doi) return null;
+		try {
+			let xhr = await this.fetchJSON(
+				"https://api.crossref.org/works/" + encodeURIComponent(doi)
+				+ "?mailto=" + encodeURIComponent(email));
+			if (xhr.status === 404) return { found: false };
+			if (xhr.status !== 200 || !xhr.response || !xhr.response.message) {
+				return { error: "Crossref HTTP " + xhr.status };
+			}
+			let r = this.retractionFromCrossref(xhr.response.message);
+			return { found: true, retracted: r.retracted, rwSource: r.rwSource || "" };
+		}
+		catch (e) {
+			this.log("crossref retraction error: " + e);
+			return { error: "Crossref request failed" };
+		}
+	},
+
 	/**
-	 * Check one reference for a retraction via PubMed (E-utilities). For a
-	 * DOI-only item, resolve a PMID first via esearch. Returns
-	 * { status: retracted|none|check, reason, source? }.
+	 * Check one reference for a retraction. PubMed first (precise publication
+	 * type); then Crossref / Retraction Watch by DOI, which catches retractions
+	 * PubMed never indexed. Returns { status: retracted|none|check, reason, source? }.
 	 */
 	async checkRetraction(doi, pmid, email) {
+		let pubmed = await this.checkRetractionPubMed(doi, pmid, email);
+		if (pubmed.status === "retracted") return pubmed;
+
+		// Not flagged by PubMed (clear, or no record). Cross-check Crossref by DOI.
+		if (doi) {
+			let cr = await this.checkRetractionCrossref(doi, email);
+			if (cr && cr.retracted) {
+				let via = cr.rwSource === "retraction-watch" ? "Retraction Watch" : "the publisher";
+				return { status: "retracted",
+					reason: "Crossref records a retraction (via " + via + ")",
+					source: "https://doi.org/" + doi };
+			}
+			if (cr && cr.error && pubmed.status === "check") {
+				return { status: "check", reason: pubmed.reason + "; Crossref: " + cr.error };
+			}
+		}
+		return pubmed;
+	},
+
+	// PubMed-only retraction check. For a DOI-only item, resolve a PMID first via
+	// esearch. Returns { status: retracted|none|check, reason, source? }.
+	async checkRetractionPubMed(doi, pmid, email) {
 		try {
 			let pid = pmid;
 			if (!pid && doi) {
@@ -533,7 +605,8 @@ var FullVahti = {
 				let id = r.pmid
 					? `<a href="https://pubmed.ncbi.nlm.nih.gov/${esc(r.pmid)}/">PMID ${esc(r.pmid)}</a>`
 					: (r.doi ? `<a href="https://doi.org/${esc(r.doi)}">doi:${esc(r.doi)}</a>` : "no identifier");
-				html += `<li>${esc(r.title)} — ${id}</li>`;
+				let via = r.reason ? ` — <em>${esc(r.reason)}</em>` : "";
+				html += `<li>${esc(r.title)} — ${id}${via}</li>`;
 			}
 			html += "</ul>";
 		}

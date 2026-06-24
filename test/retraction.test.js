@@ -32,6 +32,52 @@ test("checkRetraction returns check when there is no identifier", async () => {
 	assert.match(res.reason, /no DOI or PMID/);
 });
 
+test("retractionFromCrossref detects retraction on notice and on article", () => {
+	const { fv } = load();
+	// notice record: update-to points to the retracted article
+	const notice = fv.retractionFromCrossref({ "update-to": [{ DOI: "10.1/x", type: "retraction", source: "retraction-watch" }] });
+	assert.equal(notice.retracted, true);
+	assert.equal(notice.noticeDOI, "10.1/x");
+	assert.equal(notice.rwSource, "retraction-watch");
+	// article record: mirrored as updated-by
+	assert.equal(fv.retractionFromCrossref({ "updated-by": [{ DOI: "10.1/notice", type: "retraction", source: "publisher" }] }).retracted, true);
+	// a correction is not a retraction
+	assert.equal(fv.retractionFromCrossref({ "update-to": [{ type: "correction" }] }).retracted, false);
+	// clean / empty
+	assert.equal(fv.retractionFromCrossref({}).retracted, false);
+	assert.equal(fv.retractionFromCrossref(null).retracted, false);
+	// relation-style fallback
+	assert.equal(fv.retractionFromCrossref({ relation: { "is-retracted-by": [{ id: "x" }] } }).retracted, true);
+});
+
+test("checkRetraction falls back to Crossref when PubMed has no record", async () => {
+	// PubMed esearch finds nothing, esummary never matters; Crossref says retracted.
+	const responses = {
+		esearch: { status: 200, response: { esearchresult: { idlist: [] } } },
+		crossref: { status: 200, response: { message: { "updated-by": [{ DOI: "10.1/notice", type: "retraction", source: "retraction-watch" }] } } },
+	};
+	const { fv } = load({ zotero: { HTTP: { request: async (method, url) => {
+		if (url.includes("esearch")) return responses.esearch;
+		if (url.includes("api.crossref.org")) return responses.crossref;
+		throw new Error("unexpected url " + url);
+	} } } });
+	const res = await fv.checkRetraction("10.5555/sham", null, "me@example.org");
+	assert.equal(res.status, "retracted");
+	assert.match(res.reason, /Crossref records a retraction/);
+	assert.match(res.reason, /Retraction Watch/);
+});
+
+test("checkRetraction stays 'none' when neither source flags it", async () => {
+	const { fv } = load({ zotero: { HTTP: { request: async (method, url) => {
+		if (url.includes("esearch")) return { status: 200, response: { esearchresult: { idlist: ["42"] } } };
+		if (url.includes("esummary")) return { status: 200, response: { result: { "42": { pubtype: ["Journal Article"] } } } };
+		if (url.includes("api.crossref.org")) return { status: 200, response: { message: { "update-to": [{ type: "correction" }] } } };
+		throw new Error("unexpected url " + url);
+	} } } });
+	const res = await fv.checkRetraction("10.1/ok", null, "me@example.org");
+	assert.equal(res.status, "none");
+});
+
 test("retraction report highlights retracted items and lists unchecked", async () => {
 	const { fv, notes } = load();
 	const rows = [
