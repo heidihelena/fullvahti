@@ -52,10 +52,20 @@ var FullVahti = {
 		none: "retraction:none",
 		check: "retraction:check-needed",
 	},
+	// Citation health check: compare a record against Crossref and flag what's
+	// missing or disagrees. Read-only — FullVahti never changes a field; it surfaces
+	// the discrepancy so the human decides. A mismatch is never auto-resolved.
+	CITATION_TAGS: ["citation:ok", "citation:incomplete", "citation:mismatch", "citation:check-needed"],
+	CITATION_BY_KEY: {
+		ok: "citation:ok",
+		incomplete: "citation:incomplete",
+		mismatch: "citation:mismatch",
+		check: "citation:check-needed",
+	},
 	// Writeback (CiteVahti) may only touch tags in the Vahtian namespace. Tags
 	// outside these prefixes are refused, so a leaked token can't write arbitrary
 	// tags into someone's library.
-	ALLOWED_TAG_PREFIXES: ["cite:", "fulltext:", "retraction:", "GRADE:", "RoB2:", "ROBINS-I:", "Quality:"],
+	ALLOWED_TAG_PREFIXES: ["cite:", "fulltext:", "retraction:", "citation:", "GRADE:", "RoB2:", "ROBINS-I:", "Quality:"],
 	// Every applied writeback is recorded here (a JSON array, newest last) so each
 	// change is auditable and undoable. Bounded so the log can't grow without limit.
 	AUDIT_PREF: "auditLog",
@@ -117,6 +127,15 @@ var FullVahti = {
 			this.storeAddedElement(mi);
 		}
 
+		if (itemMenu && !doc.getElementById("fullvahti-itemmenu-citation")) {
+			let mi = doc.createXULElement("menuitem");
+			mi.id = "fullvahti-itemmenu-citation";
+			mi.setAttribute("label", "FullVahti: Check Citation Metadata");
+			mi.addEventListener("command", () => this.runCitationCheckForSelected(window));
+			itemMenu.appendChild(mi);
+			this.storeAddedElement(mi);
+		}
+
 		let toolsMenu = doc.getElementById("menu_ToolsPopup");
 		if (toolsMenu && !doc.getElementById("fullvahti-toolsmenu")) {
 			let mi = doc.createXULElement("menuitem");
@@ -134,6 +153,16 @@ var FullVahti = {
 			let tag = this.getPref("triggerTag") || "cite:closer-look";
 			mi.setAttribute("label", `FullVahti: Check items tagged “${tag}” for retractions`);
 			mi.addEventListener("command", () => this.runRetractionForTag(window));
+			toolsMenu.appendChild(mi);
+			this.storeAddedElement(mi);
+		}
+
+		if (toolsMenu && !doc.getElementById("fullvahti-toolsmenu-citation")) {
+			let mi = doc.createXULElement("menuitem");
+			mi.id = "fullvahti-toolsmenu-citation";
+			let tag = this.getPref("triggerTag") || "cite:closer-look";
+			mi.setAttribute("label", `FullVahti: Check citation metadata for items tagged “${tag}”`);
+			mi.addEventListener("command", () => this.runCitationCheckForTag(window));
 			toolsMenu.appendChild(mi);
 			this.storeAddedElement(mi);
 		}
@@ -495,8 +524,9 @@ var FullVahti = {
 	// the Retraction Watch database, so this catches retractions PubMed doesn't
 	// index (e.g. the 2024–2025 mass sham-paper retractions). Returns
 	// { found, retracted?, rwSource? } or { error }.
-	async checkRetractionCrossref(doi, email) {
-		if (!doi) return null;
+	// Fetch a Crossref work record by DOI. Returns { message } | { notFound } | { error }.
+	async crossrefWork(doi, email) {
+		if (!doi) return { error: "no DOI" };
 		try {
 			// Crossref's /works/{doi} takes the DOI raw in the PATH — a %2F-encoded
 			// slash can 404. Escape only genuinely unsafe characters (spaces, #, ?,
@@ -505,17 +535,25 @@ var FullVahti = {
 			let xhr = await this.fetchJSON(
 				"https://api.crossref.org/works/" + pathDOI
 				+ "?mailto=" + encodeURIComponent(email));
-			if (xhr.status === 404) return { found: false };
+			if (xhr.status === 404) return { notFound: true };
 			if (xhr.status !== 200 || !xhr.response || !xhr.response.message) {
 				return { error: "Crossref HTTP " + xhr.status };
 			}
-			let r = this.retractionFromCrossref(xhr.response.message);
-			return { found: true, retracted: r.retracted, rwSource: r.rwSource || "" };
+			return { message: xhr.response.message };
 		}
 		catch (e) {
-			this.log("crossref retraction error: " + e);
+			this.log("crossref error: " + e);
 			return { error: "Crossref request failed" };
 		}
+	},
+
+	async checkRetractionCrossref(doi, email) {
+		if (!doi) return null;
+		let cw = await this.crossrefWork(doi, email);
+		if (cw.notFound) return { found: false };
+		if (cw.error) return { error: cw.error };
+		let r = this.retractionFromCrossref(cw.message);
+		return { found: true, retracted: r.retracted, rwSource: r.rwSource || "" };
 	},
 
 	/**
@@ -627,6 +665,244 @@ var FullVahti = {
 				html += `<li>${esc(r.title)} — ${id} — <em>${esc(r.reason)}</em></li>`;
 			}
 			html += "</ul>";
+		}
+
+		let note = new Zotero.Item("note");
+		note.libraryID = Zotero.Libraries.userLibraryID;
+		note.setNote(html);
+		note.addTag("fullvahti:report");
+		await note.saveTx();
+	},
+
+	// -----------------------------------------------------------------
+	// Citation health check — compare a record against Crossref and flag what is
+	// missing or disagrees. READ-ONLY: FullVahti never changes a field, it reports
+	// the discrepancy for a human to resolve. Mismatches are never auto-fixed —
+	// they often mean the wrong DOI is attached, which only a person should judge.
+	// -----------------------------------------------------------------
+	async runCitationCheckForSelected(window) {
+		let items = window.ZoteroPane.getSelectedItems()
+			.filter(it => it.isRegularItem() && it.isTopLevelItem());
+		if (!items.length) {
+			window.alert("FullVahti: select one or more regular items first (not attachments or notes).");
+			return;
+		}
+		await this.runCitationCheck(items, window);
+	},
+
+	async runCitationCheckForTag(window) {
+		let tag = this.getPref("triggerTag") || "cite:closer-look";
+		let s = new Zotero.Search();
+		s.libraryID = Zotero.Libraries.userLibraryID;
+		s.addCondition("tag", "is", tag);
+		let ids = await s.search();
+		let items = (await Zotero.Items.getAsync(ids))
+			.filter(it => it.isRegularItem() && it.isTopLevelItem());
+		if (!items.length) {
+			window.alert(`FullVahti: no items carry the tag “${tag}”.`);
+			return;
+		}
+		await this.runCitationCheck(items, window);
+	},
+
+	async runCitationCheck(items, window) {
+		if (this.running) {
+			window.alert("FullVahti is already running — let the current batch finish first.");
+			return;
+		}
+		let email = await this.ensureEmail(window);
+		if (!email) return;
+
+		this.running = true;
+		let pw = new Zotero.ProgressWindow({ closeOnClick: false });
+		pw.changeHeadline("FullVahti — checking citation metadata");
+		pw.show();
+		let progress = new pw.ItemProgress("", "Starting…");
+
+		let delayMs = parseInt(this.getPref("delayMs")) || 400;
+		let rows = [];
+		let counts = { ok: 0, incomplete: 0, mismatch: 0, check: 0 };
+
+		try {
+			for (let i = 0; i < items.length; i++) {
+				let item = items[i];
+				let title = (item.getField("title") || "(untitled)").substring(0, 70);
+				progress.setText(`${i + 1}/${items.length}  ${title}`);
+				progress.setProgress(Math.round((i / items.length) * 100));
+
+				let row = { key: item.key, title, status: "", reason: "", missing: [], mismatches: [] };
+				try {
+					let res = await this.checkCitation(item, email);
+					row.status = res.status;
+					row.reason = res.reason || "";
+					row.missing = res.missing || [];
+					row.mismatches = res.mismatches || [];
+				}
+				catch (e) {
+					this.log("citation item " + item.key + " error: " + e);
+					row.status = "check";
+					row.reason = "unexpected error: " + (e.message || e);
+				}
+
+				counts[row.status]++;
+				await this.setCitationTag(item, this.CITATION_BY_KEY[row.status]);
+				rows.push(row);
+				await Zotero.Promise.delay(delayMs);
+			}
+
+			progress.setProgress(100);
+			progress.setText(
+				`Done: ${counts.ok} ok · ${counts.incomplete} incomplete · ${counts.mismatch} mismatch · ${counts.check} couldn’t check`
+			);
+
+			if (this.getPref("reportNote") && rows.length) {
+				await this.writeCitationReport(rows, counts);
+			}
+		}
+		finally {
+			this.running = false;
+			pw.startCloseTimer(8000);
+		}
+	},
+
+	// Fold accents, lowercase, and reduce to alphanumerics so trivially-different
+	// formatting doesn't read as a mismatch. Side-effect-free.
+	normalizeStr(s) {
+		return String(s == null ? "" : s)
+			.normalize("NFD").replace(/[̀-ͯ]/g, "")
+			.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+	},
+
+	// Two free-text fields "match" if they normalize equal, or the shorter is a
+	// leading prefix of the longer (handles a dropped subtitle / truncation)
+	// without matching arbitrary mid-string substrings. Empty side → not flagged.
+	sameText(a, b) {
+		let na = this.normalizeStr(a), nb = this.normalizeStr(b);
+		if (!na || !nb) return true;
+		if (na === nb) return true;
+		let short = na.length <= nb.length ? na : nb;
+		let long = na.length <= nb.length ? nb : na;
+		return short.length >= 6 && long.startsWith(short + " ");
+	},
+
+	crossrefYear(message) {
+		let dp = (message.issued && message.issued["date-parts"])
+			|| (message["published-print"] && message["published-print"]["date-parts"])
+			|| (message.published && message.published["date-parts"]);
+		if (Array.isArray(dp) && dp[0] && dp[0][0]) return String(dp[0][0]);
+		return "";
+	},
+
+	// Pure: compare our fields against a Crossref message. Returns
+	// { missing: [field], mismatches: [{field, ours, theirs}], theirs }.
+	// Only fields the source actually provides are ever flagged. Testable offline.
+	compareCitation(ours, message) {
+		message = message || {};
+		let theirs = {
+			title: (message.title && message.title[0]) || "",
+			journal: (message["container-title"] && message["container-title"][0]) || "",
+			year: this.crossrefYear(message),
+			volume: message.volume || "",
+			issue: message.issue || "",
+			pages: message.page || "",
+			issn: (message.ISSN && message.ISSN[0]) || "",
+			firstAuthor: (message.author && message.author[0]
+				&& (message.author[0].family || message.author[0].name)) || "",
+		};
+		let missing = [];
+		let mismatches = [];
+		let year4 = s => String(s).replace(/\D/g, "").slice(0, 4);
+		let issnNorm = s => String(s).replace(/[^0-9xX]/g, "").toLowerCase();
+		let pagesNorm = s => String(s).replace(/[–—]/g, "-").replace(/\s+/g, "").toLowerCase();
+		let exact = (a, b) => this.normalizeStr(a) === this.normalizeStr(b);
+		let txt = (a, b) => this.sameText(a, b);
+		let fields = [
+			["title", ours.title, theirs.title, txt],
+			["journal", ours.journal, theirs.journal, txt],
+			["year", ours.year, theirs.year, (a, b) => year4(a) === year4(b)],
+			["volume", ours.volume, theirs.volume, exact],
+			["issue", ours.issue, theirs.issue, exact],
+			["pages", ours.pages, theirs.pages, (a, b) => pagesNorm(a) === pagesNorm(b)],
+			["ISSN", ours.issn, theirs.issn, (a, b) => issnNorm(a) === issnNorm(b)],
+			["first author", ours.firstAuthor, theirs.firstAuthor, txt],
+		];
+		for (let [field, ourVal, theirVal, eq] of fields) {
+			let t = String(theirVal || "").trim();
+			if (!t) continue; // source has nothing to compare against — skip
+			let o = String(ourVal || "").trim();
+			if (!o) { missing.push(field); continue; }
+			if (!eq(o, t)) mismatches.push({ field, ours: o, theirs: t });
+		}
+		return { missing, mismatches, theirs };
+	},
+
+	async checkCitation(item, email) {
+		let doi = this.extractDOI(item);
+		if (!doi) return { status: "check", reason: "no DOI to verify against Crossref" };
+		let cw = await this.crossrefWork(doi, email);
+		if (cw.notFound) return { status: "check", reason: "DOI not found in Crossref" };
+		if (cw.error) return { status: "check", reason: "Crossref: " + cw.error };
+		let title = "";
+		try { title = (item.getField("title") || "").trim(); } catch (e) { /* ignore */ }
+		let ours = Object.assign({ title }, this.citationFields(item));
+		let cmp = this.compareCitation(ours, cw.message);
+		let status = cmp.mismatches.length ? "mismatch"
+			: (cmp.missing.length ? "incomplete" : "ok");
+		return { status, missing: cmp.missing, mismatches: cmp.mismatches };
+	},
+
+	async setCitationTag(item, tag) {
+		for (let t of this.CITATION_TAGS) {
+			if (t !== tag) item.removeTag(t);
+		}
+		item.addTag(tag);
+		await item.saveTx();
+	},
+
+	async writeCitationReport(rows, counts) {
+		let esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+		let when = new Date().toLocaleString();
+		let mism = rows.filter(r => r.status === "mismatch");
+		let incomplete = rows.filter(r => r.status === "incomplete");
+		let unchecked = rows.filter(r => r.status === "check");
+
+		let html = `<h1>FullVahti citation check — ${esc(when)}</h1>`
+			+ `<p><strong>${counts.ok}</strong> ok · `
+			+ `<strong>${counts.incomplete}</strong> incomplete · `
+			+ `<strong>${counts.mismatch}</strong> mismatched · `
+			+ `<strong>${counts.check}</strong> couldn’t be checked.</p>`
+			+ `<p>Fields are compared against Crossref. FullVahti changes nothing — `
+			+ `it lists discrepancies for you to resolve. A mismatch may mean the wrong `
+			+ `DOI is attached, so check before editing. Items are tagged `
+			+ `citation:ok / incomplete / mismatch / check-needed.</p>`;
+
+		if (mism.length) {
+			html += "<h2>Mismatches (" + mism.length + ")</h2>";
+			for (let r of mism) {
+				html += `<p><strong>${esc(r.title)}</strong></p><ul>`;
+				for (let m of r.mismatches) {
+					html += `<li>${esc(m.field)}: yours <em>“${esc(m.ours)}”</em> · `
+						+ `Crossref <em>“${esc(m.theirs)}”</em></li>`;
+				}
+				html += "</ul>";
+			}
+		}
+		if (incomplete.length) {
+			html += "<h2>Missing fields (" + incomplete.length + ")</h2><ul>";
+			for (let r of incomplete) {
+				html += `<li>${esc(r.title)} — missing: ${esc(r.missing.join(", "))}</li>`;
+			}
+			html += "</ul>";
+		}
+		if (unchecked.length) {
+			html += "<h2>Couldn’t check (" + unchecked.length + ")</h2><ul>";
+			for (let r of unchecked) {
+				html += `<li>${esc(r.title)} — <em>${esc(r.reason)}</em></li>`;
+			}
+			html += "</ul>";
+		}
+		if (!mism.length && !incomplete.length && !unchecked.length) {
+			html += "<p>Every checked item matched Crossref. Nothing to fix.</p>";
 		}
 
 		let note = new Zotero.Item("note");
