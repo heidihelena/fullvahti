@@ -24,6 +24,9 @@ async function startup({ id, version, rootURI }) {
 
 	Services.scriptloader.loadSubScript(rootURI + "fullvahti.js");
 	FullVahti.init({ id, version, rootURI });
+	// Expose for the preferences pane (a separate scope) so its buttons can reuse
+	// the same tested helpers instead of duplicating logic.
+	Zotero.FullVahti = FullVahti;
 	FullVahti.addToAllWindows();
 	FullVahti.registerEndpoints();
 }
@@ -40,6 +43,7 @@ function shutdown() {
 	log("Shutting down");
 	FullVahti.unregisterEndpoints();
 	FullVahti.removeFromAllWindows();
+	try { delete Zotero.FullVahti; } catch (e) { Zotero.FullVahti = undefined; }
 	FullVahti = undefined;
 }
 
