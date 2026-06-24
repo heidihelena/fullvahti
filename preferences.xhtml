@@ -38,6 +38,21 @@
 	</groupbox>
 
 	<groupbox>
+		<label><html:h2>Retraction check</html:h2></label>
+		<html:div style="margin-bottom: 8px">
+			Flags references PubMed records as retracted, so a retracted paper can't
+			slip through screening. For a few items, use the right-click menu
+			(<html:b>FullVahti: Check for Retractions</html:b>); for a whole batch,
+			tag them and use the button below. FullVahti reads the status from PubMed
+			— it never decides retraction itself.
+		</html:div>
+		<hbox align="center">
+			<button id="fullvahti-retract-run" label="Check tagged items for retractions now"
+				oncommand="FullVahtiPrefs.runRetractionScan()"/>
+		</hbox>
+	</groupbox>
+
+	<groupbox>
 		<label><html:h2>CiteVahti writeback (advanced — leave off unless you use CiteVahti)</html:h2></label>
 		<html:div style="margin-bottom: 8px">
 			Lets CiteVahti on this computer write status tags into your library through

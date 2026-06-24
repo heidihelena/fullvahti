@@ -29,6 +29,23 @@ The first run asks for your email once — Unpaywall and PubMed Central are free
 
 FullVahti works politely, one paper at a time, so a big batch takes a few minutes. You can keep using Zotero meanwhile.
 
+## Check for retractions
+
+A retracted paper is exactly what a screening workflow must catch. FullVahti can flag references that PubMed records as retracted:
+
+- **For a few papers:** select them, right-click → **FullVahti: Check for Retractions**.
+- **For a batch:** tag them and use **Settings → FullVahti → Check tagged items for retractions**, or **Tools → FullVahti: Check items tagged … for retractions**.
+
+Every item is labelled, and you get a report note that calls out the retracted ones:
+
+| Tag | Meaning |
+|---|---|
+| `retraction:retracted` | PubMed lists this as a Retracted Publication |
+| `retraction:none` | No retraction recorded in PubMed |
+| `retraction:check-needed` | No PubMed record found, or the lookup failed — worth a human look |
+
+FullVahti only *reads* the status from PubMed — it never decides retraction itself.
+
 ## Getting paywalled papers through your library
 
 FullVahti only ever downloads open-access copies — it never fetches paywalled PDFs, even on your university network, because automated downloading through institutional credentials can trip publishers' "systematic download" terms and get your *whole institution's* access cut off.

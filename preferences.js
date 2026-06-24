@@ -110,6 +110,23 @@ var FullVahtiPrefs = {
 		}
 	},
 
+	// Run the retraction scan over items carrying the trigger tag, using the main
+	// Zotero window for the progress UI (the prefs pane has no library selection).
+	runRetractionScan() {
+		try {
+			let win = Zotero.getMainWindow && Zotero.getMainWindow();
+			if (!win || !Zotero.FullVahti || !Zotero.FullVahti.runRetractionForTag) {
+				window.alert("Open a Zotero library window first, then try again.");
+				return;
+			}
+			Zotero.FullVahti.runRetractionForTag(win);
+		}
+		catch (e) {
+			Zotero.debug("FullVahti runRetractionScan failed: " + e);
+			window.alert("Couldn’t start the retraction check:\n" + e);
+		}
+	},
+
 	// Open a sample OpenURL against the configured resolver so the URL can be
 	// verified before a real run.
 	testResolver() {

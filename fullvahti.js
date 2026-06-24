@@ -43,10 +43,18 @@ var FullVahti = {
 		missing: "fulltext:pdf-missing",
 		check: "fulltext:check-needed",
 	},
+	// Retraction scan tags. A retracted citation is exactly what screening must
+	// catch; FullVahti reads the fact from PubMed and never judges it itself.
+	RETRACTION_TAGS: ["retraction:retracted", "retraction:none", "retraction:check-needed"],
+	RETRACTION_BY_KEY: {
+		retracted: "retraction:retracted",
+		none: "retraction:none",
+		check: "retraction:check-needed",
+	},
 	// Writeback (CiteVahti) may only touch tags in the Vahtian namespace. Tags
 	// outside these prefixes are refused, so a leaked token can't write arbitrary
 	// tags into someone's library.
-	ALLOWED_TAG_PREFIXES: ["cite:", "fulltext:", "GRADE:", "RoB2:", "ROBINS-I:", "Quality:"],
+	ALLOWED_TAG_PREFIXES: ["cite:", "fulltext:", "retraction:", "GRADE:", "RoB2:", "ROBINS-I:", "Quality:"],
 	// Every applied writeback is recorded here (a JSON array, newest last) so each
 	// change is auditable and undoable. Bounded so the log can't grow without limit.
 	AUDIT_PREF: "auditLog",
@@ -99,6 +107,15 @@ var FullVahti = {
 			this.storeAddedElement(mi);
 		}
 
+		if (itemMenu && !doc.getElementById("fullvahti-itemmenu-retract")) {
+			let mi = doc.createXULElement("menuitem");
+			mi.id = "fullvahti-itemmenu-retract";
+			mi.setAttribute("label", "FullVahti: Check for Retractions");
+			mi.addEventListener("command", () => this.runRetractionForSelected(window));
+			itemMenu.appendChild(mi);
+			this.storeAddedElement(mi);
+		}
+
 		let toolsMenu = doc.getElementById("menu_ToolsPopup");
 		if (toolsMenu && !doc.getElementById("fullvahti-toolsmenu")) {
 			let mi = doc.createXULElement("menuitem");
@@ -106,6 +123,16 @@ var FullVahti = {
 			let tag = this.getPref("triggerTag") || "cite:closer-look";
 			mi.setAttribute("label", `FullVahti: Find OA PDFs for items tagged “${tag}”`);
 			mi.addEventListener("command", () => this.runForTag(window));
+			toolsMenu.appendChild(mi);
+			this.storeAddedElement(mi);
+		}
+
+		if (toolsMenu && !doc.getElementById("fullvahti-toolsmenu-retract")) {
+			let mi = doc.createXULElement("menuitem");
+			mi.id = "fullvahti-toolsmenu-retract";
+			let tag = this.getPref("triggerTag") || "cite:closer-look";
+			mi.setAttribute("label", `FullVahti: Check items tagged “${tag}” for retractions`);
+			mi.addEventListener("command", () => this.runRetractionForTag(window));
 			toolsMenu.appendChild(mi);
 			this.storeAddedElement(mi);
 		}
@@ -309,6 +336,227 @@ var FullVahti = {
 		if (!ok || !value.value.includes("@")) return null;
 		this.setPref("email", value.value.trim());
 		return value.value.trim();
+	},
+
+	// -----------------------------------------------------------------
+	// Retraction scan — flag references PubMed records as retracted.
+	// FullVahti reports the fact; it never decides retraction itself.
+	// -----------------------------------------------------------------
+	async runRetractionForSelected(window) {
+		let items = window.ZoteroPane.getSelectedItems()
+			.filter(it => it.isRegularItem() && it.isTopLevelItem());
+		if (!items.length) {
+			window.alert("FullVahti: select one or more regular items first (not attachments or notes).");
+			return;
+		}
+		await this.runRetraction(items, window);
+	},
+
+	async runRetractionForTag(window) {
+		let tag = this.getPref("triggerTag") || "cite:closer-look";
+		let s = new Zotero.Search();
+		s.libraryID = Zotero.Libraries.userLibraryID;
+		s.addCondition("tag", "is", tag);
+		let ids = await s.search();
+		let items = (await Zotero.Items.getAsync(ids))
+			.filter(it => it.isRegularItem() && it.isTopLevelItem());
+		if (!items.length) {
+			window.alert(`FullVahti: no items carry the tag “${tag}”.`);
+			return;
+		}
+		await this.runRetraction(items, window);
+	},
+
+	async runRetraction(items, window) {
+		if (this.running) {
+			window.alert("FullVahti is already running — let the current batch finish first.");
+			return;
+		}
+		let email = await this.ensureEmail(window);
+		if (!email) return;
+
+		this.running = true;
+		let pw = new Zotero.ProgressWindow({ closeOnClick: false });
+		pw.changeHeadline("FullVahti — checking for retractions");
+		pw.show();
+		let progress = new pw.ItemProgress("", "Starting…");
+
+		let delayMs = parseInt(this.getPref("delayMs")) || 400;
+		let rows = [];
+		let counts = { retracted: 0, none: 0, check: 0 };
+		let seen = new Map();
+
+		try {
+			for (let i = 0; i < items.length; i++) {
+				let item = items[i];
+				let title = (item.getField("title") || "(untitled)").substring(0, 70);
+				progress.setText(`${i + 1}/${items.length}  ${title}`);
+				progress.setProgress(Math.round((i / items.length) * 100));
+
+				let doi = this.extractDOI(item);
+				let pmid = this.extractPMID(item);
+				let dedup = doi || pmid || item.key;
+				if (seen.has(dedup)) {
+					let status = seen.get(dedup);
+					await this.setRetractionTag(item, this.RETRACTION_BY_KEY[status]);
+					rows.push({ key: item.key, title, doi: doi || "", pmid: pmid || "",
+						status, reason: "duplicate of an item already checked this run",
+						source: "", duplicate: true });
+					await Zotero.Promise.delay(delayMs);
+					continue;
+				}
+				seen.set(dedup, null);
+
+				let row = { key: item.key, title, doi: doi || "", pmid: pmid || "",
+					status: "", reason: "", source: "" };
+				try {
+					let res = await this.checkRetraction(doi, pmid, email);
+					row.status = res.status;
+					row.reason = res.reason || "";
+					row.source = res.source || "";
+				}
+				catch (e) {
+					this.log("retraction item " + item.key + " error: " + e);
+					row.status = "check";
+					row.reason = "unexpected error: " + (e.message || e);
+				}
+
+				counts[row.status]++;
+				seen.set(dedup, row.status);
+				await this.setRetractionTag(item, this.RETRACTION_BY_KEY[row.status]);
+				rows.push(row);
+				await Zotero.Promise.delay(delayMs);
+			}
+
+			progress.setProgress(100);
+			progress.setText(
+				`Done: ${counts.retracted} retracted · ${counts.none} clear · ${counts.check} couldn’t check`
+			);
+			if (counts.retracted > 0) {
+				progress.setText(`⚠ ${counts.retracted} RETRACTED · ${counts.none} clear · ${counts.check} couldn’t check`);
+			}
+
+			if (this.getPref("reportNote") && rows.length) {
+				await this.writeRetractionReport(rows, counts);
+			}
+		}
+		finally {
+			this.running = false;
+			pw.startCloseTimer(8000);
+		}
+	},
+
+	// Pure: first PMID from an esearch JSON response, or null. Side-effect-free.
+	pmidFromESearch(json) {
+		let ids = json && json.esearchresult && json.esearchresult.idlist;
+		return (Array.isArray(ids) && ids.length) ? String(ids[0]) : null;
+	},
+
+	// Pure: decide retraction status from an esummary JSON for one PMID.
+	// "Retracted Publication" is the publication type PubMed assigns to a paper
+	// that has been retracted (distinct from "Retraction of Publication", the
+	// notice). Returns "retracted" | "none", or null when the record is absent.
+	retractionFromSummary(json, pmid) {
+		let rec = json && json.result && json.result[pmid];
+		if (!rec) return null;
+		let types = rec.pubtype || rec.pubtypelist || [];
+		let isRetracted = types.some(t => /^retracted publication$/i.test(String(t).trim()));
+		return isRetracted ? "retracted" : "none";
+	},
+
+	/**
+	 * Check one reference for a retraction via PubMed (E-utilities). For a
+	 * DOI-only item, resolve a PMID first via esearch. Returns
+	 * { status: retracted|none|check, reason, source? }.
+	 */
+	async checkRetraction(doi, pmid, email) {
+		try {
+			let pid = pmid;
+			if (!pid && doi) {
+				let xhr = await this.fetchJSON(
+					"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term="
+					+ encodeURIComponent(doi) + "%5BAID%5D&retmode=json&tool=fullvahti&email="
+					+ encodeURIComponent(email));
+				if (xhr.status === 200 && xhr.response) pid = this.pmidFromESearch(xhr.response);
+			}
+			if (!pid) {
+				return { status: "check", reason: (doi || pmid)
+					? "no PubMed record found to check for a retraction"
+					: "no DOI or PMID on the item to check" };
+			}
+			let xhr = await this.fetchJSON(
+				"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id="
+				+ encodeURIComponent(pid) + "&retmode=json&tool=fullvahti&email="
+				+ encodeURIComponent(email));
+			if (xhr.status !== 200 || !xhr.response) {
+				return { status: "check", reason: "PubMed lookup error (HTTP " + xhr.status + ")" };
+			}
+			let verdict = this.retractionFromSummary(xhr.response, pid);
+			if (verdict === null) {
+				return { status: "check", reason: "no PubMed summary returned for that record" };
+			}
+			let source = "https://pubmed.ncbi.nlm.nih.gov/" + pid + "/";
+			return verdict === "retracted"
+				? { status: "retracted", reason: "PubMed lists this as a Retracted Publication", source }
+				: { status: "none", reason: "no retraction recorded in PubMed", source };
+		}
+		catch (e) {
+			this.log("retraction check error: " + e);
+			return { status: "check", reason: "retraction lookup failed" };
+		}
+	},
+
+	async setRetractionTag(item, tag) {
+		for (let t of this.RETRACTION_TAGS) {
+			if (t !== tag) item.removeTag(t);
+		}
+		item.addTag(tag);
+		await item.saveTx();
+	},
+
+	async writeRetractionReport(rows, counts) {
+		let esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+		let when = new Date().toLocaleString();
+		let retracted = rows.filter(r => r.status === "retracted" && !r.duplicate);
+		let unchecked = rows.filter(r => r.status === "check" && !r.duplicate);
+
+		let html = `<h1>FullVahti retraction check — ${esc(when)}</h1>`
+			+ `<p><strong>${counts.retracted}</strong> retracted · `
+			+ `<strong>${counts.none}</strong> clear · `
+			+ `<strong>${counts.check}</strong> couldn’t be checked.</p>`
+			+ `<p>Retraction status is read from PubMed; FullVahti does not judge it. `
+			+ `Items are tagged retraction:retracted / none / check-needed.</p>`;
+
+		if (retracted.length) {
+			html += "<h2>⚠ Retracted (" + retracted.length + ")</h2><ul>";
+			for (let r of retracted) {
+				let id = r.pmid
+					? `<a href="https://pubmed.ncbi.nlm.nih.gov/${esc(r.pmid)}/">PMID ${esc(r.pmid)}</a>`
+					: (r.doi ? `<a href="https://doi.org/${esc(r.doi)}">doi:${esc(r.doi)}</a>` : "no identifier");
+				html += `<li>${esc(r.title)} — ${id}</li>`;
+			}
+			html += "</ul>";
+		}
+		else {
+			html += "<p>No retracted items found in this batch.</p>";
+		}
+
+		if (unchecked.length) {
+			html += "<h2>Couldn’t check (" + unchecked.length + ")</h2><ul>";
+			for (let r of unchecked) {
+				let id = r.doi
+					? `<a href="https://doi.org/${esc(r.doi)}">doi:${esc(r.doi)}</a>`
+					: (r.pmid ? `PMID ${esc(r.pmid)}` : "no identifier");
+				html += `<li>${esc(r.title)} — ${id} — <em>${esc(r.reason)}</em></li>`;
+			}
+			html += "</ul>";
+		}
+
+		let note = new Zotero.Item("note");
+		note.libraryID = Zotero.Libraries.userLibraryID;
+		note.setNote(html);
+		note.addTag("fullvahti:report");
+		await note.saveTx();
 	},
 
 	// -----------------------------------------------------------------
