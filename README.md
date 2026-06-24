@@ -107,7 +107,7 @@ Every write is **previewed, confirmed, audited, and undoable**. The door is clos
 | `/fullvahti/audit` | GET | List recorded writes (token in query string) |
 | `/fullvahti/undo` | POST | Reverse a recorded write by its audit id |
 
-**Allowlisted tags only.** Even with a valid token, only tags beginning `cite:`, `fulltext:`, `GRADE:`, `RoB2:`, `ROBINS-I:`, or `Quality:` are accepted; anything else is refused and nothing is written.
+**Allowlisted tags only.** Even with a valid token, only tags beginning `cite:`, `fulltext:`, `retraction:`, `citation:`, `GRADE:`, `RoB2:`, `ROBINS-I:`, or `Quality:` are accepted; anything else is refused and nothing is written.
 
 **1 — Preview (dry run).** CiteVahti shows you exactly what would change before anything is written:
 
@@ -142,7 +142,7 @@ CiteVahti's job is to obtain *your* confirmation for each verified decision; Ful
 
 ## Privacy
 
-- Lookups go directly from your computer to Unpaywall, NCBI/Europe PMC, and Crossref (for retraction status), carrying the paper's DOI/PMID; your contact email goes only to the APIs that ask for it (Unpaywall, NCBI, Crossref), never to the sites PDFs are downloaded from. Nothing else, to no one else.
+- Lookups go directly from your computer to Unpaywall, NCBI/Europe PMC, and Crossref (for retraction status and citation-metadata checks), carrying the paper's DOI/PMID; your contact email goes only to the APIs that ask for it (Unpaywall, NCBI, Crossref), never to the sites PDFs are downloaded from. Nothing else, to no one else.
 - No analytics, no accounts, no Vahtian servers involved.
 
 ## Development

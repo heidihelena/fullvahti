@@ -85,6 +85,7 @@ function makeItem(fields = {}, opts = {}) {
 		isRegularItem: () => opts.regular !== false,
 		isTopLevelItem: () => opts.topLevel !== false,
 		getAttachments: () => opts.attachments || [],
+		getCreators: () => opts.creators || [],
 		getTags() { return [...this._tags].map(t => ({ tag: t, type: 0 })); },
 		addTag(t) { this._tags.add(t); },
 		removeTag(t) { this._tags.delete(t); },

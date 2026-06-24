@@ -37,6 +37,19 @@ test("rejects a malformed body", async () => {
 	assert.equal(code, 400);
 });
 
+test("allowlist is exactly the documented Vahtian namespace", () => {
+	// Locks the code to the README's "Allowlisted tags only" list so the two
+	// can't drift. Update both together if the namespace ever changes.
+	const { fv } = load();
+	const documented = ["cite:", "fulltext:", "retraction:", "citation:", "GRADE:", "RoB2:", "ROBINS-I:", "Quality:"];
+	assert.deepEqual([...fv.ALLOWED_TAG_PREFIXES].sort(), [...documented].sort());
+	for (const p of documented) {
+		assert.ok(fv.tagAllowed(p + "sample"), `${p} should be allowed`);
+	}
+	assert.ok(!fv.tagAllowed("evil:tag"));
+	assert.ok(!fv.tagAllowed("GRADEISH:high")); // prefix must match, not merely start similar
+});
+
 test("rejects tags outside the Vahtian namespace", async () => {
 	const item = makeItem({}, { key: "K" });
 	const post = tagEndpoint({
