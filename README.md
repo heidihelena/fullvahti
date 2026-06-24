@@ -14,6 +14,17 @@ After each run you also get **one** report note in your library (tagged `fullvah
 
 **Open access only.** FullVahti never bypasses a paywall. Paywalled papers are honestly reported as missing. PubMed Central downloads are restricted to the [PMC Open Access Subset](https://pmc.ncbi.nlm.nih.gov/tools/openftlist/) via its official OA service — articles that are merely *readable* in PMC are reported for your library to request, not scraped. The report records the license of every PDF it attaches.
 
+## For PhD students & systematic reviewers
+
+The whole point. A typical pass over a screening set, all from inside Zotero:
+
+1. **Collect** your references in Zotero (from a database export, a search, or [CiteVahti](https://vahtian.com)). Tag the set you're working — e.g. `cite:closer-look`.
+2. **Get the full texts** → *Tools → FullVahti: Find OA PDFs for tagged items.* Free legal PDFs get attached; everything else is labelled and listed in one report note — your ready-made interlibrary-loan / [PRISMA](https://www.prisma-statement.org/) "to retrieve" list. Set your library's OpenURL resolver and each missing item gets a one-click **Find in my library** link.
+3. **Catch retractions** → *Tools → FullVahti: Check tagged items for retractions.* Cross-checks PubMed **and** Crossref/Retraction Watch, so a retracted paper can't quietly stay in your review — including the 2024–2025 mass retractions PubMed doesn't index.
+4. **Record decisions** (optional) — if you use CiteVahti for claim-by-claim appraisal, FullVahti is its safe write-back door: confirmed review tags land in Zotero only after a preview, and every write is audited and undoable.
+
+Nothing leaves your machine except the DOI/PMID lookups to the open services named below. No accounts, no analytics.
+
 ## Install (no technical skills needed)
 
 1. Download `fullvahti-x.y.z.xpi` from the [latest release](https://github.com/heidihelena/fullvahti/releases/latest) — right-click the file and choose **Save Link As…** if your browser tries to open it.

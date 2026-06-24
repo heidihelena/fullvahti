@@ -498,8 +498,12 @@ var FullVahti = {
 	async checkRetractionCrossref(doi, email) {
 		if (!doi) return null;
 		try {
+			// Crossref's /works/{doi} takes the DOI raw in the PATH — a %2F-encoded
+			// slash can 404. Escape only genuinely unsafe characters (spaces, #, ?,
+			// …) and keep the DOI's own slashes literal.
+			let pathDOI = encodeURIComponent(doi).replace(/%2F/gi, "/");
 			let xhr = await this.fetchJSON(
-				"https://api.crossref.org/works/" + encodeURIComponent(doi)
+				"https://api.crossref.org/works/" + pathDOI
 				+ "?mailto=" + encodeURIComponent(email));
 			if (xhr.status === 404) return { found: false };
 			if (xhr.status !== 200 || !xhr.response || !xhr.response.message) {
