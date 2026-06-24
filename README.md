@@ -70,7 +70,7 @@ POST /fullvahti/tag
     "audit": { "id": "abc-123", "ts": "2026-06-24T…" } }
 ```
 
-**3 — Audit.** Every applied write is recorded locally (the token is never stored). Inspect the log with `GET /fullvahti/audit?token=…`.
+**3 — Audit.** Every applied write is recorded locally (the token is never stored). CiteVahti can read it with `GET /fullvahti/audit?token=…`, and you can read it yourself — no token, no curl — via **Tools → FullVahti: Show CiteVahti write-back audit log**, which also lets you clear the history (clearing never changes tags already written).
 
 **4 — Undo.** Any recorded write can be reversed by its audit id (preview the reversal with `dryRun: true` first):
 

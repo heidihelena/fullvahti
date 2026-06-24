@@ -189,3 +189,20 @@ test("undo rejects unknown / wrong-token / disabled", async () => {
 	assert.equal((await h.undo({ token: "secret", auditId: "nope" }))[0], 404);
 	assert.equal((await h.undo({ token: "wrong", auditId: "x" }))[0], 403);
 });
+
+test("formatAuditLog renders records newest-first with undo markers", () => {
+	const { fv } = load({});
+	assert.match(fv.formatAuditLog([]), /No CiteVahti write-backs/);
+	const log = [
+		{ ts: "t1", itemKey: "A", added: ["GRADE:high"], removed: ["fulltext:pdf-missing"], undone: true },
+		{ ts: "t2", itemKey: "A", added: ["fulltext:pdf-missing"], removed: ["GRADE:high"], undoOf: "x" },
+	];
+	const out = fv.formatAuditLog(log);
+	assert.match(out, /2 write-back\(s\) recorded/);
+	// newest first
+	assert.ok(out.indexOf("t2") < out.indexOf("t1"));
+	assert.match(out, /\[undo\] A/);
+	assert.match(out, /\[undone\] A/);
+	assert.match(out, /\+GRADE:high/);
+	assert.match(out, /−fulltext:pdf-missing/);
+});

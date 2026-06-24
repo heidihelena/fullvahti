@@ -109,6 +109,17 @@ var FullVahti = {
 			toolsMenu.appendChild(mi);
 			this.storeAddedElement(mi);
 		}
+
+		// Lets the user see (and clear) CiteVahti's write-back history without
+		// touching the HTTP endpoint — the "audited" guarantee, made human-facing.
+		if (toolsMenu && !doc.getElementById("fullvahti-auditmenu")) {
+			let mi = doc.createXULElement("menuitem");
+			mi.id = "fullvahti-auditmenu";
+			mi.setAttribute("label", "FullVahti: Show CiteVahti write-back audit log");
+			mi.addEventListener("command", () => this.showAuditLog(window));
+			toolsMenu.appendChild(mi);
+			this.storeAddedElement(mi);
+		}
 	},
 
 	addToAllWindows() {
@@ -779,6 +790,56 @@ var FullVahti = {
 			+ " +[" + (rec.added || []).join(",") + "] -[" + (rec.removed || []).join(",") + "]"
 			+ (rec.undoOf ? " (undo of " + rec.undoOf + ")" : ""));
 		return rec;
+	},
+
+	// Pure: render the audit log as a plain-text summary for a dialog. Newest first,
+	// most recent `limit` shown. Side-effect-free so it can be unit-tested.
+	formatAuditLog(log, limit) {
+		if (!log || !log.length) return "No CiteVahti write-backs have been recorded yet.";
+		let n = limit || 30;
+		let shown = log.slice(-n).reverse();
+		let lines = shown.map(r => {
+			let parts = [];
+			if (r.added && r.added.length) parts.push("+" + r.added.join(" +"));
+			if (r.removed && r.removed.length) parts.push("−" + r.removed.join(" −"));
+			let what = parts.join("  ") || "(no effective change)";
+			let prefix = r.undone ? "[undone] " : (r.undoOf ? "[undo] " : "");
+			return `${r.ts}  ${prefix}${r.itemKey}: ${what}`;
+		});
+		let header = `${log.length} write-back(s) recorded`
+			+ (log.length > shown.length ? ` — showing the most recent ${shown.length}:` : ":");
+		return header + "\n\n" + lines.join("\n");
+	},
+
+	showAuditLog(window) {
+		let log = this.readAudit();
+		let text = this.formatAuditLog(log, 30);
+		if (!log.length) {
+			window.alert("FullVahti — CiteVahti write-back audit log\n\n" + text);
+			return;
+		}
+		// Offer to clear so the log can't accrete indefinitely; clearing is itself
+		// a deliberate, confirmed user action (never automatic).
+		let clear = Services.prompt.confirmEx(
+			window,
+			"FullVahti — CiteVahti write-back audit log",
+			text,
+			Services.prompt.BUTTON_POS_0 * Services.prompt.BUTTON_TITLE_IS_STRING
+				+ Services.prompt.BUTTON_POS_1 * Services.prompt.BUTTON_TITLE_IS_STRING,
+			"Close", "Clear log…", null, null, {}
+		);
+		if (clear === 1) {
+			let ok = Services.prompt.confirm(
+				window,
+				"FullVahti",
+				"Clear the entire write-back audit log? This only deletes the history "
+				+ "record — it does not change any tags already written to your library."
+			);
+			if (ok) {
+				this.setPref(this.AUDIT_PREF, "");
+				this.log("audit log cleared by user");
+			}
+		}
 	},
 
 	// -----------------------------------------------------------------
