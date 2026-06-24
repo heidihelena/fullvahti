@@ -21,13 +21,44 @@
 		<checkbox id="fullvahti-reportnote"
 			label="After each run, save one report note listing what was not found and why (good for interlibrary loan / PRISMA)"
 			preference="extensions.fullvahti.reportNote" native="true"/>
+		<html:div style="margin: 8px 0 4px">
+			Optional: your library's OpenURL resolver. When set, the report adds a
+			“Find in my library” link to each item with no open-access copy, so you can
+			fetch a licensed copy through your library. FullVahti never downloads
+			paywalled PDFs — it only hands the citation to your library.
+		</html:div>
+		<hbox align="center">
+			<label value="Library OpenURL resolver:" control="fullvahti-openurl"/>
+			<html:input id="fullvahti-openurl" type="text" style="width: 26em"
+				placeholder="https://your-library.example.edu/openurl"
+				preference="extensions.fullvahti.openURLResolver"/>
+			<button id="fullvahti-openurl-test" label="Test resolver"
+				oncommand="FullVahtiPrefs.testResolver()"/>
+		</hbox>
+	</groupbox>
+
+	<groupbox>
+		<label><html:h2>Retraction check</html:h2></label>
+		<html:div style="margin-bottom: 8px">
+			Flags references PubMed records as retracted, so a retracted paper can't
+			slip through screening. For a few items, use the right-click menu
+			(<html:b>FullVahti: Check for Retractions</html:b>); for a whole batch,
+			tag them and use the button below. FullVahti reads the status from PubMed
+			— it never decides retraction itself.
+		</html:div>
+		<hbox align="center">
+			<button id="fullvahti-retract-run" label="Check tagged items for retractions now"
+				oncommand="FullVahtiPrefs.runRetractionScan()"/>
+		</hbox>
 	</groupbox>
 
 	<groupbox>
 		<label><html:h2>CiteVahti writeback (advanced — leave off unless you use CiteVahti)</html:h2></label>
 		<html:div style="margin-bottom: 8px">
 			Lets CiteVahti on this computer write status tags into your library through
-			a token-guarded local door. Nothing leaves your machine.
+			a token-guarded local door. Nothing leaves your machine. Only Vahtian
+			tags can be written, every write is previewed before it happens, recorded
+			to a local audit log, and can be undone.
 		</html:div>
 		<checkbox id="fullvahti-writeback"
 			label="Allow CiteVahti to write tags (local only, token required)"
@@ -37,6 +68,14 @@
 			<html:input id="fullvahti-token-display" type="text" readonly="readonly" style="width: 26em"/>
 			<button id="fullvahti-token-generate" label="Generate new token"
 				oncommand="FullVahtiPrefs.generateToken()"/>
+			<button id="fullvahti-token-copy" label="Copy"
+				oncommand="FullVahtiPrefs.copyToken()"/>
+		</hbox>
+		<hbox align="center">
+			<button id="fullvahti-test-connection" label="Test connection"
+				oncommand="FullVahtiPrefs.testConnection()"/>
+			<button id="fullvahti-view-audit" label="View write-back audit log"
+				oncommand="FullVahtiPrefs.viewAudit()"/>
 		</hbox>
 	</groupbox>
 
