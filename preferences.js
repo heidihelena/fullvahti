@@ -127,6 +127,22 @@ var FullVahtiPrefs = {
 		}
 	},
 
+	// Run the citation metadata check over items carrying the trigger tag.
+	runCitationScan() {
+		try {
+			let win = Zotero.getMainWindow && Zotero.getMainWindow();
+			if (!win || !Zotero.FullVahti || !Zotero.FullVahti.runCitationCheckForTag) {
+				window.alert("Open a Zotero library window first, then try again.");
+				return;
+			}
+			Zotero.FullVahti.runCitationCheckForTag(win);
+		}
+		catch (e) {
+			Zotero.debug("FullVahti runCitationScan failed: " + e);
+			window.alert("Couldn’t start the citation check:\n" + e);
+		}
+	},
+
 	// Open a sample OpenURL against the configured resolver so the URL can be
 	// verified before a real run.
 	testResolver() {

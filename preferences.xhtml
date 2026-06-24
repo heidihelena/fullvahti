@@ -53,6 +53,21 @@
 	</groupbox>
 
 	<groupbox>
+		<label><html:h2>Citation metadata check</html:h2></label>
+		<html:div style="margin-bottom: 8px">
+			Compares each reference against Crossref and flags missing fields and
+			mismatches (which can mean the wrong DOI is attached). For a few items use
+			the right-click menu (<html:b>FullVahti: Check Citation Metadata</html:b>);
+			for a batch, tag them and use the button below. <html:b>Read-only</html:b> —
+			FullVahti changes nothing; it lists discrepancies for you to resolve.
+		</html:div>
+		<hbox align="center">
+			<button id="fullvahti-citation-run" label="Check tagged items' citation metadata now"
+				oncommand="FullVahtiPrefs.runCitationScan()"/>
+		</hbox>
+	</groupbox>
+
+	<groupbox>
 		<label><html:h2>CiteVahti writeback (advanced — leave off unless you use CiteVahti)</html:h2></label>
 		<html:div style="margin-bottom: 8px">
 			Lets CiteVahti on this computer write status tags into your library through

@@ -21,7 +21,8 @@ The whole point. A typical pass over a screening set, all from inside Zotero:
 1. **Collect** your references in Zotero (from a database export, a search, or [CiteVahti](https://vahtian.com)). Tag the set you're working — e.g. `cite:closer-look`.
 2. **Get the full texts** → *Tools → FullVahti: Find OA PDFs for tagged items.* Free legal PDFs get attached; everything else is labelled and listed in one report note — your ready-made interlibrary-loan / [PRISMA](https://www.prisma-statement.org/) "to retrieve" list. Set your library's OpenURL resolver and each missing item gets a one-click **Find in my library** link.
 3. **Catch retractions** → *Tools → FullVahti: Check tagged items for retractions.* Cross-checks PubMed **and** Crossref/Retraction Watch, so a retracted paper can't quietly stay in your review — including the 2024–2025 mass retractions PubMed doesn't index.
-4. **Record decisions** (optional) — if you use CiteVahti for claim-by-claim appraisal, FullVahti is its safe write-back door: confirmed review tags land in Zotero only after a preview, and every write is audited and undoable.
+4. **Sanity-check the metadata** → *Tools → FullVahti: Check citation metadata for tagged items.* Compares each record to Crossref and flags missing fields and mismatches (a mismatch often means the wrong DOI is attached). Read-only — it never edits your records.
+5. **Record decisions** (optional) — if you use CiteVahti for claim-by-claim appraisal, FullVahti is its safe write-back door: confirmed review tags land in Zotero only after a preview, and every write is audited and undoable.
 
 Nothing leaves your machine except the DOI/PMID lookups to the open services named below. No accounts, no analytics.
 
@@ -61,6 +62,22 @@ Every item is labelled, and you get a report note that calls out the retracted o
 | `retraction:check-needed` | No record found, or the lookup failed — worth a human look |
 
 FullVahti only *reads* the status from PubMed and Crossref — it never decides retraction itself. For each DOI it checks PubMed first, then Crossref; for a DOI-only item it resolves a PMID via PubMed's search before falling back to Crossref.
+
+## Check citation metadata
+
+Zotero records imported from databases often have missing or wrong fields — and a wrong field can mean the **wrong DOI is attached to the record**. FullVahti compares each reference against [Crossref](https://www.crossref.org) and tells you what's off, **without changing anything**:
+
+- **For a few papers:** select them, right-click → **FullVahti: Check Citation Metadata**.
+- **For a batch:** tag them and use **Settings → FullVahti → Check citation metadata**, or the Tools menu.
+
+| Tag | Meaning |
+|---|---|
+| `citation:ok` | Matches Crossref |
+| `citation:incomplete` | Crossref has fields your record is missing |
+| `citation:mismatch` | A field disagrees with Crossref — **check before editing**, it may be the wrong DOI |
+| `citation:check-needed` | No DOI, or Crossref didn't have the record |
+
+The report note lists every discrepancy side by side (*your value* vs *Crossref's*). **FullVahti is read-only here** — it never edits a field and never auto-"fixes" a mismatch, because a mismatch needs a human: it can mean the wrong paper is attached, and only you should decide. (Comparisons fold accents and formatting, and only flag fields Crossref actually provides, to avoid noise.)
 
 ## Getting paywalled papers through your library
 
