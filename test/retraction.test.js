@@ -50,6 +50,17 @@ test("retractionFromCrossref detects retraction on notice and on article", () =>
 	assert.equal(fv.retractionFromCrossref({ relation: { "is-retracted-by": [{ id: "x" }] } }).retracted, true);
 });
 
+test("Crossref query keeps DOI slashes literal in the path (not %2F)", async () => {
+	let seenURL = "";
+	const { fv } = load({ zotero: { HTTP: { request: async (method, url) => {
+		seenURL = url;
+		return { status: 200, response: { message: {} } };
+	} } } });
+	await fv.checkRetractionCrossref("10.1016/S0140-6736(20)31180-6", "me@example.org");
+	assert.match(seenURL, /api\.crossref\.org\/works\/10\.1016\/S0140-6736/);
+	assert.doesNotMatch(seenURL, /%2F/i);
+});
+
 test("checkRetraction falls back to Crossref when PubMed has no record", async () => {
 	// PubMed esearch finds nothing, esummary never matters; Crossref says retracted.
 	const responses = {
