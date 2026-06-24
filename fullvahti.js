@@ -239,8 +239,9 @@ var FullVahti = {
 				}
 				seen.set(dedup, null);
 
-				let row = { key: item.key, title, doi: doi || "", pmid: pmid || "",
-					status: "", reason: "", source: "", license: "", oaStatus: "" };
+				let row = Object.assign({ key: item.key, title, doi: doi || "", pmid: pmid || "",
+					status: "", reason: "", source: "", license: "", oaStatus: "" },
+					this.citationFields(item));
 				try {
 					if (this.hasPDF(item)) {
 						row.status = "found";
@@ -665,6 +666,59 @@ var FullVahti = {
 		await item.saveTx();
 	},
 
+	// Citation fields used to build an OpenURL link to a library resolver. Each
+	// getField is guarded — fields vary by item type — so this never throws.
+	citationFields(item) {
+		let g = (f) => { try { return (item.getField(f) || "").trim(); } catch (e) { return ""; } };
+		let year = "";
+		let m = g("date").match(/\d{4}/);
+		if (m) year = m[0];
+		let firstAuthor = "";
+		try {
+			let creators = item.getCreators ? item.getCreators() : [];
+			if (creators && creators.length) firstAuthor = creators[0].lastName || creators[0].name || "";
+		}
+		catch (e) { /* creators optional */ }
+		return {
+			journal: g("publicationTitle"),
+			year,
+			volume: g("volume"),
+			issue: g("issue"),
+			pages: g("pages"),
+			issn: g("ISSN"),
+			firstAuthor,
+		};
+	},
+
+	// Pure: build a standards-compliant OpenURL 1.0 (Z39.88) link to a library's
+	// resolver so a paywalled-but-licensed item is one human click away. FullVahti
+	// never fetches it — it only hands the citation to *your* library, which keeps
+	// the OA-only stance intact and stays clear of publishers' bulk-download terms.
+	// Returns "" when no resolver base is configured. Side-effect-free (testable).
+	buildOpenURL(base, m) {
+		base = (base || "").trim();
+		if (!base) return "";
+		m = m || {};
+		let parts = [];
+		let add = (k, v) => { if (v) parts.push(encodeURIComponent(k) + "=" + encodeURIComponent(v)); };
+		add("ctx_ver", "Z39.88-2004");
+		add("rft_val_fmt", "info:ofi/fmt:kev:mtx:journal");
+		add("rfr_id", "info:sid/fullvahti");
+		add("rft.genre", "article");
+		add("rft.atitle", m.title);
+		add("rft.jtitle", m.journal);
+		add("rft.issn", m.issn);
+		add("rft.date", m.year);
+		add("rft.volume", m.volume);
+		add("rft.issue", m.issue);
+		add("rft.pages", m.pages);
+		add("rft.aulast", m.firstAuthor);
+		add("rft_id", m.doi ? "info:doi/" + m.doi : "");
+		add("rft_id", m.pmid ? "info:pmid/" + m.pmid : "");
+		let sep = base.includes("?") ? "&" : "?";
+		return base + sep + parts.join("&");
+	},
+
 	// -----------------------------------------------------------------
 	// Run report: ONE standalone note per run (never per-item notes).
 	// The "not found + why" list feeds ILL requests and PRISMA counts.
@@ -676,6 +730,7 @@ var FullVahti = {
 		// actionable lists below (they're the same paper, already counted once).
 		let problems = rows.filter(r => r.status !== "found" && !r.duplicate);
 		let dupes = rows.filter(r => r.duplicate);
+		let resolver = (this.getPref("openURLResolver") || "").trim();
 
 		let html = `<h1>FullVahti report — ${esc(when)}</h1>`
 			+ `<p><strong>${counts.found}</strong> PDF(s) attached · `
@@ -683,6 +738,11 @@ var FullVahti = {
 			+ `<strong>${counts.check}</strong> needing a manual look.</p>`
 			+ `<p>Open access only — paywalled items are listed below for interlibrary loan, `
 			+ `not bypassed. Items are tagged fulltext:pdf-found / pdf-missing / check-needed.</p>`;
+		if (resolver) {
+			html += `<p>Each item below has a “Find in my library” link — that goes to your `
+				+ `library’s resolver so you can fetch a licensed copy yourself. FullVahti `
+				+ `does not download paywalled PDFs; the link just hands the citation to your library.</p>`;
+		}
 		if (dupes.length) {
 			html += `<p>${dupes.length} duplicate item(s) were tagged to match the original `
 				+ `and omitted from the lists below.</p>`;
@@ -694,7 +754,16 @@ var FullVahti = {
 				let id = r.doi
 					? `<a href="https://doi.org/${esc(r.doi)}">doi:${esc(r.doi)}</a>`
 					: (r.pmid ? `<a href="https://pubmed.ncbi.nlm.nih.gov/${esc(r.pmid)}/">PMID ${esc(r.pmid)}</a>` : "no identifier");
-				html += `<li>${esc(r.title)} — ${id} — <em>${esc(r.reason || r.status)}</em></li>`;
+				let lib = "";
+				if (resolver) {
+					let u = this.buildOpenURL(resolver, {
+						title: r.title, journal: r.journal, year: r.year, volume: r.volume,
+						issue: r.issue, pages: r.pages, issn: r.issn, firstAuthor: r.firstAuthor,
+						doi: r.doi, pmid: r.pmid,
+					});
+					if (u) lib = ` — <a href="${esc(u)}">Find in my library</a>`;
+				}
+				html += `<li>${esc(r.title)} — ${id} — <em>${esc(r.reason || r.status)}</em>${lib}</li>`;
 			}
 			html += "</ul>";
 		}

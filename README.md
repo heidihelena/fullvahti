@@ -29,6 +29,14 @@ The first run asks for your email once — Unpaywall and PubMed Central are free
 
 FullVahti works politely, one paper at a time, so a big batch takes a few minutes. You can keep using Zotero meanwhile.
 
+## Getting paywalled papers through your library
+
+FullVahti only ever downloads open-access copies — it never fetches paywalled PDFs, even on your university network, because automated downloading through institutional credentials can trip publishers' "systematic download" terms and get your *whole institution's* access cut off.
+
+Instead, it can hand the citation to your library. In **Settings → FullVahti**, paste your library's **OpenURL resolver** address. After that, every item with no open-access copy gets a **"Find in my library"** link in the report note — one click takes you to your library's resolver, where you fetch the licensed copy yourself. FullVahti does no paywalled downloading; it just builds the link.
+
+(Your library's resolver URL is usually on its website under "link resolver", "OpenURL", "SFX", or "find it" — ask a librarian if unsure.)
+
 ## For CiteVahti users (advanced, off by default)
 
 FullVahti is [CiteVahti](https://vahtian.com)'s Zotero companion. It does the Zotero-side work CiteVahti deliberately stays out of — finding open-access PDFs, and writing **confirmed** review decisions back into your library — while CiteVahti keeps sole ownership of claim verification and the human-first rating workflow. FullVahti never verifies claims, never decides whether a paper supports a claim, never rates anything, and never receives manuscript text: it only ever sees an item key and a short list of allowlisted tags.

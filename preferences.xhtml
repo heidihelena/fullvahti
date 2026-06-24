@@ -21,6 +21,18 @@
 		<checkbox id="fullvahti-reportnote"
 			label="After each run, save one report note listing what was not found and why (good for interlibrary loan / PRISMA)"
 			preference="extensions.fullvahti.reportNote" native="true"/>
+		<html:div style="margin: 8px 0 4px">
+			Optional: your library's OpenURL resolver. When set, the report adds a
+			“Find in my library” link to each item with no open-access copy, so you can
+			fetch a licensed copy through your library. FullVahti never downloads
+			paywalled PDFs — it only hands the citation to your library.
+		</html:div>
+		<hbox align="center">
+			<label value="Library OpenURL resolver:" control="fullvahti-openurl"/>
+			<html:input id="fullvahti-openurl" type="text" style="width: 26em"
+				placeholder="https://your-library.example.edu/openurl"
+				preference="extensions.fullvahti.openURLResolver"/>
+		</hbox>
 	</groupbox>
 
 	<groupbox>
