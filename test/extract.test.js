@@ -54,6 +54,31 @@ test("extractPMCID normalizes case and requires the PMC prefix", () => {
 	assert.equal(fv.extractPMCID(makeItem({ extra: "no identifier here" })), null);
 });
 
+test("citationFields pulls the comparable fields and the publication year", () => {
+	const { fv } = load();
+	const item = makeItem(
+		{ publicationTitle: "Journal of Things", date: "2020-05-01", volume: "12",
+			issue: "3", pages: "45-67", ISSN: "1234-5678" },
+		{ creators: [{ lastName: "Smith", firstName: "J." }, { lastName: "Jones" }] }
+	);
+	const f = fv.citationFields(item);
+	assert.equal(f.journal, "Journal of Things");
+	assert.equal(f.year, "2020");          // 4-digit year extracted from the date
+	assert.equal(f.volume, "12");
+	assert.equal(f.issue, "3");
+	assert.equal(f.pages, "45-67");
+	assert.equal(f.issn, "1234-5678");
+	assert.equal(f.firstAuthor, "Smith");  // first creator's surname
+});
+
+test("citationFields is safe when fields and creators are absent", () => {
+	const { fv } = load();
+	const f = fv.citationFields(makeItem({}));
+	assert.equal(f.year, "");
+	assert.equal(f.firstAuthor, "");
+	assert.equal(f.journal, "");
+});
+
 test("hasPDF detects an existing PDF attachment", () => {
 	const { fv } = load({ itemsById: { 10: { attachmentContentType: "application/pdf" }, 11: { attachmentContentType: "text/html" } } });
 	assert.equal(fv.hasPDF(makeItem({}, { attachments: [10] })), true);
