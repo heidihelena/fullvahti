@@ -1,7 +1,32 @@
-/* global Zotero, document, window */
+/* global Zotero, document, window, Services */
 "use strict";
 
 var FullVahtiPrefs = {
+	// A dependable chrome window. The pref-pane script's ambient `window` is NOT
+	// reliable across Zotero 7–9 (button handlers that called window.alert just
+	// silently did nothing), so always resolve through Zotero first.
+	_win() {
+		try {
+			if (Zotero.getMainWindow) {
+				let w = Zotero.getMainWindow();
+				if (w) return w;
+			}
+		}
+		catch (e) { /* fall through */ }
+		try { return window; }
+		catch (e) { return null; }
+	},
+
+	// Show a message without depending on the pane's ambient window.alert.
+	_say(msg) {
+		let w = this._win();
+		try { if (w && typeof w.alert === "function") { w.alert(msg); return; } }
+		catch (e) { /* try next */ }
+		try { if (typeof Services !== "undefined") { Services.prompt.alert(w || null, "FullVahti", msg); return; } }
+		catch (e) { /* try next */ }
+		Zotero.debug("FullVahti (prefs): " + msg);
+	},
+
 	onPaneLoad() {
 		try {
 			let tok = Zotero.Prefs.get("extensions.fullvahti.writebackToken", true);
@@ -11,6 +36,33 @@ var FullVahtiPrefs = {
 		catch (e) {
 			Zotero.debug("FullVahti prefs: " + e);
 		}
+		this._wireButtons();
+	},
+
+	// Bind the pane buttons from within this script's scope instead of relying on
+	// inline oncommand="FullVahtiPrefs.x()" — which is not dependable in Zotero 7+
+	// pref panes and left every advanced button doing nothing. Idempotent.
+	_wireButtons() {
+		if (this._wired) return;
+		let bind = (id, name) => {
+			let el = document.getElementById(id);
+			if (!el) return false;
+			el.addEventListener("command", () => {
+				try { this[name](); }
+				catch (e) { Zotero.debug("FullVahti prefs button " + name + " failed: " + e); }
+			});
+			return true;
+		};
+		// Only mark as wired once the DOM is actually present (the script may run
+		// a hair before the pane content is inserted; the root onload re-invokes us).
+		let ok = bind("fullvahti-token-generate", "generateToken");
+		bind("fullvahti-token-copy", "copyToken");
+		bind("fullvahti-test-connection", "testConnection");
+		bind("fullvahti-view-audit", "viewAudit");
+		bind("fullvahti-openurl-test", "testResolver");
+		bind("fullvahti-retract-run", "runRetractionScan");
+		bind("fullvahti-citation-run", "runCitationScan");
+		if (ok) this._wired = true;
 	},
 
 	generateToken() {
@@ -49,25 +101,23 @@ var FullVahtiPrefs = {
 		try { tok = Zotero.Prefs.get("extensions.fullvahti.writebackToken", true) || ""; }
 		catch (e) { /* fall through */ }
 		if (!tok) {
-			window.alert("No token yet — click “Generate new token” first.");
+			this._say("No token yet — click “Generate new token” first.");
 			return;
 		}
-		let box = document.getElementById("fullvahti-token-display");
-		try {
-			if (box) { box.focus(); box.select(); }
-			document.execCommand("copy");
-			window.alert("Token copied to the clipboard.");
-		}
-		catch (e) {
+		let ok = false;
+		// Zotero's clipboard helper is the reliable path in the pane scope.
+		try { Zotero.Utilities.Internal.copyTextToClipboard(tok); ok = true; }
+		catch (e) { /* fall back to the DOM */ }
+		if (!ok) {
 			try {
-				Zotero.Utilities.Internal.copyTextToClipboard(tok);
-				window.alert("Token copied to the clipboard.");
+				let box = document.getElementById("fullvahti-token-display");
+				if (box) { box.focus(); box.select(); ok = document.execCommand("copy"); }
 			}
-			catch (e2) {
-				Zotero.debug("FullVahti copyToken failed: " + e2);
-				window.alert("Couldn’t copy automatically — select the token and copy it by hand.");
-			}
+			catch (e) { /* report below */ }
 		}
+		this._say(ok
+			? "Token copied to the clipboard."
+			: "Couldn’t copy automatically — select the token and copy it by hand.");
 	},
 
 	// Confirm the local endpoint is reachable and report enabled/token state, so
@@ -79,7 +129,7 @@ var FullVahtiPrefs = {
 				{ responseType: "json", timeout: 5000, successCodes: false });
 			let d = (xhr && xhr.response) || {};
 			let tokenSet = !!Zotero.Prefs.get("extensions.fullvahti.writebackToken", true);
-			window.alert(
+			this._say(
 				"FullVahti’s local endpoint is reachable.\n\n"
 				+ "Write-back enabled: " + (d.writeback ? "yes" : "no — tick the box above") + "\n"
 				+ "Token set: " + (tokenSet ? "yes" : "no — click “Generate new token”") + "\n\n"
@@ -90,7 +140,7 @@ var FullVahtiPrefs = {
 		}
 		catch (e) {
 			Zotero.debug("FullVahti testConnection failed: " + e);
-			window.alert(
+			this._say(
 				"Could not reach FullVahti’s local endpoint.\n\n"
 				+ "Check that Zotero’s local server is on (Settings → Advanced → "
 				+ "“Allow other applications on this computer to communicate with Zotero”), "
@@ -103,10 +153,10 @@ var FullVahtiPrefs = {
 	// tested helpers (exposed on Zotero.FullVahti by bootstrap).
 	viewAudit() {
 		if (Zotero.FullVahti && Zotero.FullVahti.showAuditLog) {
-			Zotero.FullVahti.showAuditLog(window);
+			Zotero.FullVahti.showAuditLog(this._win());
 		}
 		else {
-			window.alert("FullVahti isn’t fully loaded yet — open a Zotero library window first.");
+			this._say("FullVahti isn’t fully loaded yet — open a Zotero library window first.");
 		}
 	},
 
@@ -114,32 +164,32 @@ var FullVahtiPrefs = {
 	// Zotero window for the progress UI (the prefs pane has no library selection).
 	runRetractionScan() {
 		try {
-			let win = Zotero.getMainWindow && Zotero.getMainWindow();
+			let win = this._win();
 			if (!win || !Zotero.FullVahti || !Zotero.FullVahti.runRetractionForTag) {
-				window.alert("Open a Zotero library window first, then try again.");
+				this._say("Open a Zotero library window first, then try again.");
 				return;
 			}
 			Zotero.FullVahti.runRetractionForTag(win);
 		}
 		catch (e) {
 			Zotero.debug("FullVahti runRetractionScan failed: " + e);
-			window.alert("Couldn’t start the retraction check:\n" + e);
+			this._say("Couldn’t start the retraction check:\n" + e);
 		}
 	},
 
 	// Run the citation metadata check over items carrying the trigger tag.
 	runCitationScan() {
 		try {
-			let win = Zotero.getMainWindow && Zotero.getMainWindow();
+			let win = this._win();
 			if (!win || !Zotero.FullVahti || !Zotero.FullVahti.runCitationCheckForTag) {
-				window.alert("Open a Zotero library window first, then try again.");
+				this._say("Open a Zotero library window first, then try again.");
 				return;
 			}
 			Zotero.FullVahti.runCitationCheckForTag(win);
 		}
 		catch (e) {
 			Zotero.debug("FullVahti runCitationScan failed: " + e);
-			window.alert("Couldn’t start the citation check:\n" + e);
+			this._say("Couldn’t start the citation check:\n" + e);
 		}
 	},
 
@@ -150,7 +200,7 @@ var FullVahtiPrefs = {
 		try { base = (Zotero.Prefs.get("extensions.fullvahti.openURLResolver", true) || "").trim(); }
 		catch (e) { /* fall through */ }
 		if (!base) {
-			window.alert("Enter your library’s OpenURL resolver address first.");
+			this._say("Enter your library’s OpenURL resolver address first.");
 			return;
 		}
 		let sample = { title: "An example article", journal: "Journal of Examples",
@@ -163,7 +213,7 @@ var FullVahtiPrefs = {
 		}
 		catch (e) {
 			Zotero.debug("FullVahti testResolver failed: " + e);
-			window.alert("Couldn’t open the link. The resolver address may be malformed:\n\n" + url);
+			this._say("Couldn’t open the link. The resolver address may be malformed:\n\n" + url);
 		}
 	},
 };
