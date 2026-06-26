@@ -151,6 +151,12 @@ Plain JavaScript, no build step — the plugin **is** the repository. To make an
 
 Compatibility: Zotero 7–9. When a new Zotero major lands, bump `strict_max_version` in [manifest.json](manifest.json) and re-release.
 
+Two [Claude Code](https://claude.com/claude-code) skills live in `.claude/skills/`:
+`zotero-9-plugin-dev` (building/debugging/releasing a bootstrapped Zotero 7/8/9
+plugin — including the Zotero 8/9 preference-pane "dead object" pitfall) and
+`fullvahti-for-agents` (the write-back API contract for an integrating LLM agent
+such as CiteVahti).
+
 ## License
 
 [Apache 2.0](LICENSE) © Heidi Andersén / Vahtian
