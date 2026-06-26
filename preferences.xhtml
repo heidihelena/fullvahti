@@ -32,8 +32,7 @@
 			<html:input id="fullvahti-openurl" type="text" style="width: 26em"
 				placeholder="https://your-library.example.edu/openurl"
 				preference="extensions.fullvahti.openURLResolver"/>
-			<button id="fullvahti-openurl-test" label="Test resolver"
-				oncommand="FullVahtiPrefs.testResolver()"/>
+			<button id="fullvahti-openurl-test" label="Test resolver"/>
 		</hbox>
 	</groupbox>
 
@@ -47,8 +46,7 @@
 			— it never decides retraction itself.
 		</html:div>
 		<hbox align="center">
-			<button id="fullvahti-retract-run" label="Check tagged items for retractions now"
-				oncommand="FullVahtiPrefs.runRetractionScan()"/>
+			<button id="fullvahti-retract-run" label="Check tagged items for retractions now"/>
 		</hbox>
 	</groupbox>
 
@@ -62,8 +60,7 @@
 			FullVahti changes nothing; it lists discrepancies for you to resolve.
 		</html:div>
 		<hbox align="center">
-			<button id="fullvahti-citation-run" label="Check tagged items' citation metadata now"
-				oncommand="FullVahtiPrefs.runCitationScan()"/>
+			<button id="fullvahti-citation-run" label="Check tagged items' citation metadata now"/>
 		</hbox>
 	</groupbox>
 
@@ -81,16 +78,12 @@
 		<hbox align="center">
 			<label value="Token:" control="fullvahti-token-display"/>
 			<html:input id="fullvahti-token-display" type="text" readonly="readonly" style="width: 26em"/>
-			<button id="fullvahti-token-generate" label="Generate new token"
-				oncommand="FullVahtiPrefs.generateToken()"/>
-			<button id="fullvahti-token-copy" label="Copy"
-				oncommand="FullVahtiPrefs.copyToken()"/>
+			<button id="fullvahti-token-generate" label="Generate new token"/>
+			<button id="fullvahti-token-copy" label="Copy"/>
 		</hbox>
 		<hbox align="center">
-			<button id="fullvahti-test-connection" label="Test connection"
-				oncommand="FullVahtiPrefs.testConnection()"/>
-			<button id="fullvahti-view-audit" label="View write-back audit log"
-				oncommand="FullVahtiPrefs.viewAudit()"/>
+			<button id="fullvahti-test-connection" label="Test connection"/>
+			<button id="fullvahti-view-audit" label="View write-back audit log"/>
 		</hbox>
 	</groupbox>
 
