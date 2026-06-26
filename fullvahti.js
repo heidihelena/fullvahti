@@ -103,6 +103,128 @@ var FullVahti = {
 	},
 
 	// -----------------------------------------------------------------
+	// Preference pane wiring — driven from HERE (the persistent plugin scope),
+	// not from the pane script. On Zotero 8/9 the pane runs in its own private
+	// scope and its document is rebuilt on each open, so any reference the pane
+	// script keeps dies ("can't access dead object"). The pane's onload hands us
+	// the LIVE root element each time; we read/write the token field and bind the
+	// buttons against root.ownerDocument and never cache a document.
+	prefsInit(root) {
+		let doc;
+		try { doc = root && root.ownerDocument; } catch (e) { doc = null; }
+		if (!doc) { this.log("prefsInit: no live document"); return; }
+		try {
+			let box = doc.getElementById("fullvahti-token-display");
+			if (box) box.value = this.getPref("writebackToken") || "(none yet — click “Generate new token”)";
+		}
+		catch (e) { this.log("prefsInit token: " + e); }
+
+		let self = this;
+		let bind = (id, fn) => {
+			try {
+				let el = doc.getElementById(id);
+				if (el && !el._fvBound) {
+					el._fvBound = true;
+					el.addEventListener("command", () => {
+						try { fn(doc); }
+						catch (e) { self.log("pref button " + id + ": " + e); }
+					});
+				}
+			}
+			catch (e) { self.log("prefsInit bind " + id + ": " + e); }
+		};
+		bind("fullvahti-token-generate", d => self.prefGenerateToken(d));
+		bind("fullvahti-token-copy", d => self.prefCopyToken(d));
+		bind("fullvahti-test-connection", () => self.prefTestConnection());
+		bind("fullvahti-view-audit", () => self.showAuditLog(self.prefWin()));
+		bind("fullvahti-openurl-test", () => self.prefTestResolver());
+		bind("fullvahti-retract-run", () => self.runRetractionForTag(self.prefWin()));
+		bind("fullvahti-citation-run", () => self.runCitationCheckForTag(self.prefWin()));
+	},
+
+	// The main Zotero window — a live, never-dead handle for dialogs and progress.
+	prefWin() {
+		try { let w = Zotero.getMainWindow(); if (w) return w; }
+		catch (e) { /* fall through */ }
+		return null;
+	},
+
+	prefSay(msg) {
+		let w = this.prefWin();
+		try { if (w && typeof w.alert === "function") { w.alert(msg); return; } }
+		catch (e) { /* try next */ }
+		try { Services.prompt.alert(w || null, "FullVahti", msg); return; }
+		catch (e) { /* fall through */ }
+		this.log(msg);
+	},
+
+	prefGenerateToken(doc) {
+		let token = null;
+		try { token = Zotero.Utilities.randomString(40); }
+		catch (e) { token = null; }
+		if (!token) {
+			let cs = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+			let bytes = new Uint8Array(40);
+			let cryptoObj = (doc && doc.defaultView && doc.defaultView.crypto)
+				|| (typeof crypto !== "undefined" ? crypto : null);
+			cryptoObj.getRandomValues(bytes);
+			token = Array.from(bytes, b => cs[b % cs.length]).join("");
+		}
+		this.setPref("writebackToken", token);
+		try { let box = doc.getElementById("fullvahti-token-display"); if (box) box.value = token; }
+		catch (e) { /* the prefSay below still confirms it worked */ }
+		this.prefSay("A new write-back token was generated. Use “Copy” to copy it.");
+	},
+
+	prefCopyToken(doc) {
+		let tok = this.getPref("writebackToken") || "";
+		if (!tok) { this.prefSay("No token yet — click “Generate new token” first."); return; }
+		let ok = false;
+		try { Zotero.Utilities.Internal.copyTextToClipboard(tok); ok = true; }
+		catch (e) { /* report below */ }
+		this.prefSay(ok
+			? "Token copied to the clipboard."
+			: "Couldn’t copy automatically — select the token in the box and copy it by hand.");
+	},
+
+	async prefTestConnection() {
+		try {
+			let xhr = await Zotero.HTTP.request("GET",
+				"http://127.0.0.1:23119/fullvahti/ping",
+				{ responseType: "json", timeout: 5000, successCodes: false });
+			let d = (xhr && xhr.response) || {};
+			let tokenSet = !!this.getPref("writebackToken");
+			this.prefSay(
+				"FullVahti’s local endpoint is reachable.\n\n"
+				+ "Write-back enabled: " + (d.writeback ? "yes" : "no — tick the box above") + "\n"
+				+ "Token set: " + (tokenSet ? "yes" : "no — click “Generate new token”") + "\n\n"
+				+ (d.writeback && tokenSet
+					? "Ready: give the token to CiteVahti."
+					: "Finish the two steps above, then CiteVahti can connect."));
+		}
+		catch (e) {
+			this.log("prefTestConnection: " + e);
+			this.prefSay(
+				"Could not reach FullVahti’s local endpoint.\n\n"
+				+ "Check that Zotero’s local server is on (Settings → Advanced → "
+				+ "“Allow other applications on this computer to communicate with Zotero”), "
+				+ "then try again.\n\nDetail: " + e);
+		}
+	},
+
+	prefTestResolver() {
+		let base = (this.getPref("openURLResolver") || "").trim();
+		if (!base) { this.prefSay("Enter your library’s OpenURL resolver address first."); return; }
+		let url = this.buildOpenURL(base, { title: "An example article", journal: "Journal of Examples",
+			year: "2020", volume: "12", issue: "3", pages: "45-67", doi: "10.1038/nphys1170" });
+		try { Zotero.launchURL(url); }
+		catch (e) {
+			this.log("prefTestResolver: " + e);
+			this.prefSay("Couldn’t open the link. The resolver address may be malformed:\n\n" + url);
+		}
+	},
+
+	// -----------------------------------------------------------------
 	// Window wiring
 	// -----------------------------------------------------------------
 	addToWindow(window) {
